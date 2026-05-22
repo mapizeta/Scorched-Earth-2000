@@ -77,6 +77,18 @@ const AI_RADIUS_FACTOR = [3.0, 2.0, 1.5];
 const AI_WEAPON_PRICE_CENTER = [0.12, 0.52, 0.86];
 const AI_WEAPON_PRICE_SPREAD = [0.34, 0.36, 0.28];
 const TRACER_FADE_MS = 300000;
+const WALL_TYPES = [
+  { id: "none", name: "None", color: rgb(128, 128, 128), shot: false },
+  { id: "concrete", name: "Concrete", color: rgb(255, 255, 255), shot: true },
+  { id: "padded", name: "Padded", color: rgb(0, 180, 0), shot: true },
+  { id: "rubber", name: "Rubber", color: rgb(255, 0, 0), shot: true },
+  { id: "spring", name: "Spring", color: rgb(0, 255, 255), shot: true },
+  { id: "wraparound", name: "Wraparound", color: rgb(255, 255, 0), shot: true },
+  { id: "random", name: "Random", color: rgb(128, 128, 128), shot: false },
+  { id: "erratic", name: "Erratic", color: rgb(128, 128, 128), shot: false }
+];
+const SHOT_WALL_TYPES = WALL_TYPES.filter((entry) => entry.shot).map((entry) => entry.id);
+const WALL_TYPE_BY_ID = new Map(WALL_TYPES.map((entry) => [entry.id, entry]));
 
 const tankData = [
   [
@@ -391,6 +403,9 @@ class ScorchGame {
     this.maxWind = PhysicsMaxWind();
     this.changingWinds = false;
     this.unlimitedInventory = false;
+    this.wallMode = "none";
+    this.activeWallType = "none";
+    this.pendingShotWallType = null;
     this.weapon = 0;
     this.animating = false;
     this.roundOver = false;
@@ -434,6 +449,7 @@ class ScorchGame {
     this.maxWind = Number.isFinite(maxWind) ? Math.max(0, Math.trunc(maxWind)) : PhysicsMaxWind();
     this.changingWinds = !!config.changingWinds;
     this.unlimitedInventory = !!config.unlimitedInventory;
+    this.wallMode = validWallType(config.wallType);
     INITIAL_CASH = Number.isFinite(initialCash) ? Math.max(0, Math.trunc(initialCash)) : DEFAULT_INITIAL_CASH;
     const previousPlayers = this.players;
     this.players = config.players.map((entry, index) => {
@@ -489,6 +505,30 @@ class ScorchGame {
   randomizeWind() {
     this.wind = this.maxWind > 0 ? this.rand.int(this.maxWind * 2 + 1) - this.maxWind : 0;
     return this.wind;
+  }
+  roundWallType() {
+    if (this.wallMode === "random") return validWallType(this.activeWallType);
+    return validWallType(this.wallMode);
+  }
+  chooseRoundWallType() {
+    if (this.wallMode !== "random") return validWallType(this.wallMode);
+    return this.randomShotWallType();
+  }
+  shotWallType() {
+    this.activeWallType = this.pendingShotWallType || (this.wallMode === "erratic" ? this.randomShotWallType() : this.roundWallType());
+    this.pendingShotWallType = null;
+    return this.activeWallType;
+  }
+  prepareShotWallType() {
+    this.pendingShotWallType = this.wallMode === "erratic" ? this.randomShotWallType() : this.roundWallType();
+    this.activeWallType = this.pendingShotWallType;
+    return this.activeWallType;
+  }
+  randomShotWallType() {
+    return SHOT_WALL_TYPES[this.rand.int(SHOT_WALL_TYPES.length)] || "concrete";
+  }
+  wallInfo() {
+    return WALL_TYPE_BY_ID.get(this.activeWallType) || WALL_TYPE_BY_ID.get("none");
   }
   captureStatsSnapshot() {
     this.statsSnapshot = this.players.map((player) => ({
@@ -558,7 +598,9 @@ class ScorchGame {
       this.droneTimer = null;
     }
     this.roundOver = false;
+    this.pendingShotWallType = null;
     this.bitmap = new Bitmap(WIDTH, HEIGHT, this.rand);
+    this.activeWallType = this.chooseRoundWallType();
     this.groundColor = this.randomBackground();
     this.bitmap.setSandColor(this.groundColor);
     this.randomizeWind();
@@ -724,6 +766,7 @@ class ScorchGame {
       writePixel(this.image.data, i, this.bitmap.pixels[i]);
     }
     this.ctx.putImageData(this.image, 0, 0);
+    this.drawWalls();
     this.drawTracerTrails();
     for (const player of this.players) {
       if (!player.alive) continue;
@@ -735,6 +778,15 @@ class ScorchGame {
     this.drawWind();
     this.drawChatMessages();
     this.drawTooltip();
+  }
+  drawWalls() {
+    const info = this.wallInfo();
+    if (!info) return;
+    this.ctx.save();
+    this.ctx.strokeStyle = cssColor(info.color);
+    this.ctx.lineWidth = info.id === "none" ? 1 : 2;
+    this.ctx.strokeRect(0.5, 0.5, WIDTH - 1, HEIGHT - 1);
+    this.ctx.restore();
   }
   drawParachute(player) {
     if (!player.falling || player.parachutes <= 0) return;
@@ -1101,23 +1153,44 @@ class ScorchGame {
     const speed = player.power / 8;
     const vx0 = speed * Math.cos(angle);
     const vy0 = speed * Math.sin(angle);
-    let step = 0;
     let prevX = startX;
     let prevY = HEIGHT - startY;
+    const wallType = this.shotWallType();
+    const projectile = { startX, startY, vx: vx0, vy: vy0, step: 0, prevX, prevY };
     const tracerTrail = useTracer ? this.createTracerTrail(player, [prevX, prevY]) : null;
     let hit = null;
     let intercepted = null;
     this.render(`${player.name} fires ${weapon.name}.`);
-    while (!hit) {
-      const x = Math.trunc(startX + (this.wind + vx0) * step * STEP_SIZE);
-      const y = Math.trunc(HEIGHT - (startY + step * STEP_SIZE * (vy0 - 0.5 * EARTH_GRAVITY * step * STEP_SIZE)));
+    let flightTicks = 0;
+    while (!hit && flightTicks++ < 1800) {
+      let { x, y } = this.projectilePoint(projectile);
+      const wall = this.resolveWall(projectile, x, y, wallType);
+      x = wall.x;
+      y = wall.y;
+      if (wall.kind === "escaped") break;
+      if (wall.kind === "hit") {
+        hit = { x, y };
+        if (tracerTrail) tracerTrail.push([hit.x, hit.y]);
+        break;
+      }
+      if (wall.kind === "bounced" || wall.kind === "wrapped") {
+        if (tracerTrail) tracerTrail.push([x, y]);
+        prevX = x;
+        prevY = y;
+        this.drawWorld();
+        this.ctx.fillStyle = "#fff";
+        this.ctx.fillRect(x - 1, y - 1, 3, 3);
+        projectile.step += 2;
+        await sleep(18);
+        continue;
+      }
       if (x < 0 || x >= WIDTH) break;
       if (y >= HEIGHT) {
         hit = { x, y: HEIGHT - 1 };
         if (tracerTrail) tracerTrail.push([hit.x, hit.y]);
         break;
       }
-      if (y >= 0 && prevY >= 0 && step > 0) hit = this.intersectShot(prevX, prevY, x, y);
+      if (y >= 0 && prevY >= 0 && projectile.step > 0) hit = this.intersectShot(prevX, prevY, x, y);
       if (tracerTrail) tracerTrail.push(hit ? [hit.x, hit.y] : [x, y]);
       intercepted = !hit ? this.updateInterceptorDrones(x, y, player) : null;
       if (intercepted) {
@@ -1130,7 +1203,9 @@ class ScorchGame {
       this.ctx.fillRect(x - 1, y - 1, 3, 3);
       prevX = x;
       prevY = y;
-      step += 2;
+      projectile.prevX = x;
+      projectile.prevY = y;
+      projectile.step += 2;
       await sleep(18);
     }
     if (intercepted) {
@@ -1172,7 +1247,13 @@ class ScorchGame {
     this.ctx.beginPath();
     this.ctx.moveTo(points[0][0] + 0.5, points[0][1] + 0.5);
     for (let i = 1; i < points.length; i++) {
-      this.ctx.lineTo(points[i][0] + 0.5, points[i][1] + 0.5);
+      const previous = points[i - 1];
+      const current = points[i];
+      if (Math.abs(current[0] - previous[0]) > WIDTH / 2) {
+        this.ctx.moveTo(current[0] + 0.5, current[1] + 0.5);
+      } else {
+        this.ctx.lineTo(current[0] + 0.5, current[1] + 0.5);
+      }
     }
     this.ctx.stroke();
     this.ctx.restore();
@@ -1182,6 +1263,42 @@ class ScorchGame {
     this.weapon = preferredWeaponFor(player, this.weapon);
     updateUi(this, "Out of ammo.");
     return false;
+  }
+  projectilePoint(projectile) {
+    const x = Math.trunc(projectile.startX + (this.wind + projectile.vx) * projectile.step * STEP_SIZE);
+    const worldY = projectile.startY + projectile.step * STEP_SIZE * (projectile.vy - 0.5 * EARTH_GRAVITY * projectile.step * STEP_SIZE);
+    return { x, y: Math.trunc(HEIGHT - worldY), worldY };
+  }
+  resolveWall(projectile, x, y, wallType) {
+    if (wallType === "none") return { kind: "free", x, y };
+    if (x >= 0 && x < WIDTH && y >= 0) return { kind: "free", x, y };
+    if (wallType === "wraparound" && x >= 0 && x < WIDTH) return { kind: "free", x, y };
+    projectile.wallEvents = (projectile.wallEvents || 0) + 1;
+    if (projectile.wallEvents > (projectile.maxWallEvents ?? 64)) return { kind: "escaped", x, y };
+    if (wallType === "wraparound" && (x < 0 || x >= WIDTH)) {
+      const wrappedX = ((x % WIDTH) + WIDTH) % WIDTH;
+      projectile.startX = wrappedX;
+      projectile.startY = HEIGHT - y;
+      projectile.step = 0;
+      projectile.prevX = wrappedX;
+      projectile.prevY = y;
+      return { kind: "wrapped", x: wrappedX, y };
+    }
+    const hitVertical = x < 0 || x >= WIDTH;
+    const hitTop = y < 0;
+    if (!hitVertical && !hitTop) return { kind: "free", x, y };
+    const wallX = x < 0 ? 0 : (x >= WIDTH ? WIDTH - 1 : x);
+    const wallY = y < 0 ? 0 : y;
+    if (wallType === "concrete") return { kind: "hit", x: wallX, y: wallY };
+    const scale = wallType === "padded" ? 0.62 : (wallType === "spring" ? 1.18 : 1);
+    if (hitVertical) projectile.vx = -projectile.vx * scale;
+    if (hitTop) projectile.vy = -(projectile.vy - EARTH_GRAVITY * projectile.step * STEP_SIZE) * scale;
+    projectile.startX = wallX;
+    projectile.startY = HEIGHT - wallY;
+    projectile.step = 0;
+    projectile.prevX = wallX;
+    projectile.prevY = wallY;
+    return { kind: "bounced", x: wallX, y: wallY };
   }
   updateInterceptorDrones(x, y, shooter = null) {
     for (const player of this.players) {
@@ -1265,23 +1382,44 @@ class ScorchGame {
     const speed = player.power / 8;
     const vx0 = speed * Math.cos(angle);
     const vy0 = speed * Math.sin(angle);
-    let step = 0;
     let prevX = startX;
     let prevY = HEIGHT - startY;
     let apex = null;
+    const wallType = this.shotWallType();
+    const mainProjectile = { startX, startY, vx: vx0, vy: vy0, step: 0, prevX, prevY };
     const mainTrail = useTracer ? this.createTracerTrail(player, [startX, HEIGHT - startY]) : null;
     this.render(`${player.name} fires ${weapon.name}.`);
-      while (!apex) {
-      const x = Math.trunc(startX + (this.wind + vx0) * step * STEP_SIZE);
-      const worldY = startY + step * STEP_SIZE * (vy0 - 0.5 * EARTH_GRAVITY * step * STEP_SIZE);
-      const y = Math.trunc(HEIGHT - worldY);
+    let flightTicks = 0;
+    while (!apex && flightTicks++ < 1800) {
+      let { x, y, worldY } = this.projectilePoint(mainProjectile);
+      const wall = this.resolveWall(mainProjectile, x, y, wallType);
+      x = wall.x;
+      y = wall.y;
+      worldY = HEIGHT - y;
+      if (wall.kind === "escaped") return this.nextTurn("Missile left the field.");
+      if (wall.kind === "hit") {
+        if (mainTrail) mainTrail.push([x, y]);
+        await this.explode(x, y, weapon.radius, player, { ...weapon, kind: "simple" });
+        return;
+      }
+      if (wall.kind === "bounced" || wall.kind === "wrapped") {
+        if (mainTrail) mainTrail.push([x, y]);
+        prevX = x;
+        prevY = y;
+        this.drawWorld();
+        this.ctx.fillStyle = "#fff";
+        this.ctx.fillRect(x - 1, y - 1, 3, 3);
+        mainProjectile.step += 2;
+        await sleep(18);
+        continue;
+      }
       if (x < 0 || x >= WIDTH) return this.nextTurn("Missile left the field.");
       if (y >= HEIGHT) {
         if (mainTrail) mainTrail.push([x, HEIGHT - 1]);
         await this.explode(x, HEIGHT - 1, weapon.radius, player, { ...weapon, kind: "simple" });
         return;
       }
-      const hit = y >= 0 && prevY >= 0 && step > 0 ? this.intersectShot(prevX, prevY, x, y) : null;
+      const hit = y >= 0 && prevY >= 0 && mainProjectile.step > 0 ? this.intersectShot(prevX, prevY, x, y) : null;
       if (hit) {
         if (mainTrail) mainTrail.push([hit.x, hit.y]);
         await this.explode(hit.x, hit.y, weapon.radius, player, { ...weapon, kind: "simple" });
@@ -1294,22 +1432,28 @@ class ScorchGame {
         this.nextTurn("Missile intercepted.");
         return { intercepted: true };
       }
-      if (step > 4 && y > prevY) apex = { x, y, worldY };
+      if (mainProjectile.step > 4 && y > prevY) apex = { x, y, worldY };
       if (mainTrail) mainTrail.push([x, y]);
       this.drawWorld();
       this.ctx.fillStyle = "#fff";
       this.ctx.fillRect(x - 1, y - 1, 3, 3);
       prevX = x;
       prevY = y;
-      step += 2;
+      mainProjectile.prevX = x;
+      mainProjectile.prevY = y;
+      mainProjectile.step += 2;
       await sleep(18);
+    }
+    if (!apex) {
+      this.nextTurn("Missile left the field.");
+      return;
     }
 
     const particles = [];
     let power = vx0 - 5 * weapon.particles / 2;
     for (let i = 0; i < weapon.particles; i++) {
       const trail = useTracer ? this.createTracerTrail(player, [apex.x, apex.y]) : null;
-      particles.push({ startX: apex.x, startY: HEIGHT - apex.y, vx: power, step: 0, done: false, prevX: apex.x, prevY: apex.y, trail });
+      particles.push({ startX: apex.x, startY: HEIGHT - apex.y, vx: power, vy: 0, step: 0, done: false, prevX: apex.x, prevY: apex.y, trail });
       power += 5;
     }
 
@@ -1321,8 +1465,29 @@ class ScorchGame {
       for (const particle of particles) {
         if (particle.done) continue;
         active = true;
-        const x = Math.trunc(particle.startX + (this.wind + particle.vx) * particle.step * STEP_SIZE);
-        const y = Math.trunc(HEIGHT - (particle.startY + particle.step * STEP_SIZE * (0 - 0.5 * EARTH_GRAVITY * particle.step * STEP_SIZE)));
+        let { x, y } = this.projectilePoint(particle);
+        const wall = this.resolveWall(particle, x, y, wallType);
+        x = wall.x;
+        y = wall.y;
+        if (wall.kind === "escaped") {
+          particle.done = true;
+          continue;
+        }
+        if (wall.kind === "hit") {
+          particle.done = true;
+          if (particle.trail) particle.trail.push([x, y]);
+          impacts.push({ x, y, radius: weapon.radius, weapon: { ...weapon, kind: "simple" } });
+          continue;
+        }
+        if (wall.kind === "bounced" || wall.kind === "wrapped") {
+          if (particle.trail) particle.trail.push([x, y]);
+          this.ctx.fillStyle = "#fff";
+          this.ctx.fillRect(x - 1, y - 1, 3, 3);
+          particle.prevX = x;
+          particle.prevY = y;
+          particle.step += 2;
+          continue;
+        }
         if (x < 0 || x >= WIDTH) {
           particle.done = true;
           continue;
@@ -1508,8 +1673,8 @@ class ScorchGame {
       particles.push({
         startX: x + xoffset,
         startY: HEIGHT - y + yoffset,
-        vx0: power * Math.cos(angle),
-        vy0: power * Math.sin(angle),
+        vx: power * Math.cos(angle),
+        vy: power * Math.sin(angle),
         step: 0,
         prevX: x + xoffset,
         prevY: y - yoffset,
@@ -1520,6 +1685,7 @@ class ScorchGame {
     }
 
     const impacts = [];
+    const wallType = this.activeWallType;
     let active = true;
     while (active || impacts.some((impact) => impact.frame <= 24)) {
       active = false;
@@ -1533,10 +1699,27 @@ class ScorchGame {
       for (const particle of particles) {
         if (particle.done) continue;
         active = true;
-        const sx = particle.startX + (this.wind + particle.vx0) * particle.step * STEP_SIZE;
-        const sy = particle.startY + particle.step * STEP_SIZE * (particle.vy0 - 0.5 * EARTH_GRAVITY * particle.step * STEP_SIZE);
-        const px = Math.trunc(sx);
-        const py = Math.trunc(HEIGHT - sy);
+        let { x: px, y: py } = this.projectilePoint(particle);
+        const wall = this.resolveWall(particle, px, py, wallType);
+        px = wall.x;
+        py = wall.y;
+        if (wall.kind === "escaped") {
+          particle.done = true;
+          continue;
+        }
+        if (wall.kind === "hit") {
+          particle.trail.push([px, py]);
+          particle.done = true;
+          impacts.push({ x: px, y: py, color: particle.color, frame: 0 });
+          continue;
+        }
+        if (wall.kind === "bounced" || wall.kind === "wrapped") {
+          if (py >= 0) particle.trail.push([px, py]);
+          particle.prevX = px;
+          particle.prevY = py;
+          particle.step += 1;
+          continue;
+        }
         if (px < 0 || px >= WIDTH) {
           particle.done = true;
           continue;
@@ -2451,13 +2634,18 @@ class ScorchGame {
     this.animating = true;
     setControlsDisabled(true);
     this.prepareAiDefenses(player);
-    const weaponIndex = this.chooseAiWeapon(player);
-    const weapon = WEAPONS[weaponIndex];
+    let weaponIndex = this.chooseAiWeapon(player);
+    let weapon = WEAPONS[weaponIndex];
+    if (player.aiType === 2) this.prepareShotWallType();
     const shot = await this.findAiShot(player, weapon);
     if (this.players[this.active] !== player || this.roundOver) {
       this.animating = false;
       setControlsDisabled(false);
       return;
+    }
+    if (shot.fallback) {
+      weaponIndex = this.randomAiWeapon(player);
+      weapon = WEAPONS[weaponIndex];
     }
     player.angle = shot.angle;
     player.power = shot.power;
@@ -2518,6 +2706,13 @@ class ScorchGame {
     }
     return weighted[weighted.length - 1].index;
   }
+  randomAiWeapon(player) {
+    const choices = WEAPONS
+      .map((weapon, index) => ({ weapon, index, qty: player.weapons[index] ?? 0 }))
+      .filter(({ qty }) => qty > 0);
+    if (!choices.length) return usableWeaponIndex(player, 0);
+    return choices[this.rand.int(choices.length)].index;
+  }
   aiWeaponRadius(weapon) {
     if (weapon.kind === "mirv") return Math.round((weapon.radius || 10) * Math.min(3.2, 1 + (weapon.particles || 1) * 0.24));
     if (weapon.kind === "napalm") return Math.round((weapon.radius || 80) * 0.45);
@@ -2563,9 +2758,43 @@ class ScorchGame {
       powerSpan: player.powerLimit,
       powerStep: Math.max(8 * accuracy, 24)
     });
-    const shot = fallback.score > 0 ? this.applyAiInaccuracy(player, { angle: fallback.angle, power: fallback.power }) : { angle: startAngle, power: startPower };
+    const shot = fallback.score > 0
+      ? this.applyAiInaccuracy(player, { angle: fallback.angle, power: fallback.power })
+      : this.closestOpponentFallbackShot(player);
     await this.animateAiAim(player, path, shot);
     return shot;
+  }
+  closestOpponentFallbackShot(player) {
+    const target = this.closestAiOpponent(player);
+    if (!target) return { angle: player.angle, power: player.power, fallback: true };
+    const targetCenter = this.tankCenter(target);
+    const startX = player.turretX(2);
+    const startY = player.turretY(2);
+    const dx = targetCenter.x - startX;
+    const dy = startY - targetCenter.y;
+    const distance = Math.hypot(dx, dy);
+    const rawAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    const angle = rawAngle < 0
+      ? (dx < 0 ? 179 : 0)
+      : Math.max(0, Math.min(179, Math.round(rawAngle)));
+    const powerNoise = this.rand.int(161) - 80;
+    const power = Math.max(0, Math.min(player.powerLimit, Math.round(Math.max(START_POWER, distance * 2.2) + powerNoise)));
+    return { angle, power, fallback: true };
+  }
+  closestAiOpponent(player) {
+    const shooterCenter = this.tankCenter(player);
+    let closest = null;
+    let closestDistance = Infinity;
+    for (const target of this.players) {
+      if (!target.alive || target === player) continue;
+      const targetCenter = this.tankCenter(target);
+      const distance = (targetCenter.x - shooterCenter.x) ** 2 + (targetCenter.y - shooterCenter.y) ** 2;
+      if (distance < closestDistance) {
+        closest = target;
+        closestDistance = distance;
+      }
+    }
+    return closest;
   }
   applyAiInaccuracy(player, shot) {
     const angleSpread = [3, 2, 0][player.aiType] ?? 2;
@@ -2656,9 +2885,24 @@ class ScorchGame {
     const vy0 = speed * Math.sin(angle);
     let prevX = startX;
     let prevY = HEIGHT - startY;
+    const wallType = player.aiType === 2 ? this.activeWallType : "none";
+    const projectile = { startX, startY, vx: vx0, vy: vy0, step: 0, prevX, prevY, maxWallEvents: 8 };
+    let iterations = 0;
     for (let step = 4; step < 560; step += 4) {
-      const x = Math.trunc(startX + (this.wind + vx0) * step * STEP_SIZE);
-      const y = Math.trunc(HEIGHT - (startY + step * STEP_SIZE * (vy0 - 0.5 * EARTH_GRAVITY * step * STEP_SIZE)));
+      if (++iterations > 180) return null;
+      projectile.step = step;
+      let { x, y } = this.projectilePoint(projectile);
+      const wall = this.resolveWall(projectile, x, y, wallType);
+      x = wall.x;
+      y = wall.y;
+      if (wall.kind === "escaped") return null;
+      if (wall.kind === "hit") return { x, y };
+      if (wall.kind === "bounced" || wall.kind === "wrapped") {
+        prevX = x;
+        prevY = y;
+        step = 0;
+        continue;
+      }
       if (x < 0 || x >= WIDTH) return null;
       if (y >= HEIGHT) return { x, y: HEIGHT - 1 };
       if (y >= 0 && prevY >= 0) {
@@ -2701,6 +2945,15 @@ function PhysicsMaxWind() {
 
 function MAX_PLAYERS_PENALTY() {
   return 8;
+}
+
+function validWallType(value) {
+  const id = String(value || "none").toLowerCase();
+  return WALL_TYPE_BY_ID.has(id) ? id : "none";
+}
+
+function wallTypeName(value) {
+  return (WALL_TYPE_BY_ID.get(validWallType(value)) || WALL_TYPE_BY_ID.get("none")).name;
 }
 
 function lerpColor(a, b, q) {
@@ -2863,6 +3116,7 @@ const singlePlayerSettings = {
   maxWind: PhysicsMaxWind(),
   changingWinds: false,
   unlimitedInventory: false,
+  wallType: "none",
   initialCash: DEFAULT_INITIAL_CASH,
   rounds: 1,
   currentRound: 1,
@@ -2900,7 +3154,7 @@ class MultiplayerSession {
     this.games = [];
     this.title = "";
     this.private = false;
-    this.settings = { resolution: "800x600", maxWind: 10, changingWinds: false, unlimitedInventory: false, initialCash: DEFAULT_INITIAL_CASH, rounds: 3, currentRound: 0 };
+    this.settings = { resolution: "800x600", maxWind: 10, changingWinds: false, unlimitedInventory: false, wallType: "none", initialCash: DEFAULT_INITIAL_CASH, rounds: 3, currentRound: 0 };
     this.activeTurnId = 0;
     this.gameOver = false;
     this.chatLog = [];
@@ -2973,7 +3227,7 @@ class MultiplayerSession {
     document.getElementById("openCreateGame").disabled = !this.connected || !!this.room || !!this.joinPending;
     document.getElementById("shareRoom").disabled = !this.room;
     document.getElementById("joinUrl").value = this.shareUrl();
-    for (const id of ["multiplayerTank", "multiplayerGameName", "multiplayerPrivate", "multiplayerResolution", "multiplayerWind", "multiplayerChangingWinds", "multiplayerUnlimitedInventory", "multiplayerCash", "multiplayerRounds"]) {
+    for (const id of ["multiplayerTank", "multiplayerGameName", "multiplayerPrivate", "multiplayerResolution", "multiplayerWind", "multiplayerWalls", "multiplayerChangingWinds", "multiplayerUnlimitedInventory", "multiplayerCash", "multiplayerRounds"]) {
       document.getElementById(id).disabled = !!this.room || this.started;
     }
     syncTankPickers();
@@ -2986,6 +3240,7 @@ class MultiplayerSession {
     document.getElementById("waitingOptions").innerHTML = [
       `${escapeHtml(this.settings.resolution)}`,
       `Wind ${this.settings.maxWind}${this.settings.changingWinds ? " changing" : ""}`,
+      `Walls ${wallTypeName(this.settings.wallType)}`,
       `$${this.settings.initialCash} cash`,
       this.settings.unlimitedInventory ? "Unlimited items" : "Shop inventory",
       `${this.settings.rounds} rounds`,
@@ -2999,7 +3254,7 @@ class MultiplayerSession {
       <div class="multiplayer-game-row">
         <div class="multiplayer-game-main">
           <strong>${entry.code}${entry.title ? ` ${escapeHtml(entry.title)}` : ""}</strong>
-          <span>${entry.players}/8 ${entry.started ? `round ${entry.currentRound}/${entry.rounds}` : "open"} | ${escapeHtml(entry.resolution)} | wind ${entry.maxWind}${entry.changingWinds ? " changing" : ""} | ${entry.unlimitedInventory ? "unlimited items" : `$${entry.initialCash}`} | ${entry.rounds} rounds</span>
+          <span>${entry.players}/8 ${entry.started ? `round ${entry.currentRound}/${entry.rounds}` : "open"} | ${escapeHtml(entry.resolution)} | wind ${entry.maxWind}${entry.changingWinds ? " changing" : ""} | walls ${wallTypeName(entry.wallType)} | ${entry.unlimitedInventory ? "unlimited items" : `$${entry.initialCash}`} | ${entry.rounds} rounds</span>
           <span class="game-meta">${entry.started ? "playing" : `starts ${formatCountdown(entry.autoStartAt ? entry.autoStartAt - Date.now() : null)}`}</span>
           <span class="game-meta">Host: ${escapeHtml(entry.host)} | ${entry.names.map(escapeHtml).join(", ")}</span>
         </div>
@@ -3109,6 +3364,7 @@ class MultiplayerSession {
       tankType: Number(document.getElementById("multiplayerTank").value),
       resolution: document.getElementById("multiplayerResolution").value,
       maxWind: Number(document.getElementById("multiplayerWind").value),
+      wallType: document.getElementById("multiplayerWalls").value,
       changingWinds: document.getElementById("multiplayerChangingWinds").checked,
       unlimitedInventory: document.getElementById("multiplayerUnlimitedInventory").checked,
       initialCash: Number(document.getElementById("multiplayerCash").value),
@@ -3233,6 +3489,7 @@ class MultiplayerSession {
       maxWind: Number(message.maxWind ?? this.settings.maxWind),
       changingWinds: !!message.changingWinds,
       unlimitedInventory: !!message.unlimitedInventory,
+      wallType: validWallType(message.wallType ?? this.settings.wallType),
       initialCash: Number(message.initialCash ?? this.settings.initialCash),
       rounds: Number(message.rounds ?? this.settings.rounds),
       currentRound: Number(message.currentRound ?? this.settings.currentRound)
@@ -3242,6 +3499,7 @@ class MultiplayerSession {
     document.getElementById("multiplayerGameName").value = this.title;
     document.getElementById("multiplayerPrivate").checked = this.private;
     document.getElementById("multiplayerWind").value = String(this.settings.maxWind);
+    document.getElementById("multiplayerWalls").value = this.settings.wallType;
     document.getElementById("multiplayerChangingWinds").checked = this.settings.changingWinds;
     document.getElementById("multiplayerUnlimitedInventory").checked = this.settings.unlimitedInventory;
     document.getElementById("multiplayerCash").value = String(this.settings.initialCash);
@@ -3267,7 +3525,7 @@ class MultiplayerSession {
     this.send({ type: "fire", playerId: this.game.active, activeTurnId: this.activeTurnId, angle: player.angle, power: player.power, weapon: this.game.weapon });
   }
   massKill() {
-    if (!this.started || this.game.animating) return;
+    if (!this.started) return;
     if (this.clientId !== this.hostId) {
       this.status("Only the game master can mass kill.");
       return;
@@ -3394,7 +3652,7 @@ class MultiplayerSession {
       this.applySettings(message);
       this.syncRoster(message.players, { replaceStats: true });
       document.getElementById("multiplayerRoom").value = this.room;
-      this.status(`${this.private ? "Private " : ""}Game ${this.room}${this.title ? ` (${this.title})` : ""} ready. ${this.settings.resolution}, wind ${this.settings.maxWind}${this.settings.changingWinds ? " changing" : ""}, ${this.settings.unlimitedInventory ? "unlimited items" : `cash ${this.settings.initialCash}`}, ${this.settings.rounds} rounds.`);
+      this.status(`${this.private ? "Private " : ""}Game ${this.room}${this.title ? ` (${this.title})` : ""} ready. ${this.settings.resolution}, wind ${this.settings.maxWind}${this.settings.changingWinds ? " changing" : ""}, walls ${wallTypeName(this.settings.wallType)}, ${this.settings.unlimitedInventory ? "unlimited items" : `cash ${this.settings.initialCash}`}, ${this.settings.rounds} rounds.`);
       document.getElementById("createGameBox").classList.add("hidden");
       this.showScreen("waiting");
       this.roster();
@@ -3770,6 +4028,12 @@ function updateUi(game, message = "") {
   document.getElementById("weaponSelect").value = String(game.weapon);
   document.getElementById("windOut").textContent = String(game.wind);
   document.getElementById("roundOut").textContent = roundReadoutText();
+  const wallInfo = game.wallInfo();
+  const wallOut = document.getElementById("wallOut");
+  if (wallOut && wallInfo) {
+    wallOut.textContent = `Walls: ${wallInfo.name}`;
+    wallOut.style.borderColor = cssColor(wallInfo.color);
+  }
   const players = document.getElementById("players");
   players.innerHTML = game.players.map((player) => {
     const pct = Math.max(0, Math.min(100, Math.round(player.powerLimit / MAX_POWER * 100)));
@@ -3891,6 +4155,8 @@ function debugBackgroundLines(currentGame) {
     lines.push("  sky color: rgb(0, 0, 0) #000000");
   }
   lines.push(`Ground: ${cssColor(currentGame.groundColor)} ${hexColor(currentGame.groundColor)}`);
+  const wallInfo = currentGame.wallInfo();
+  lines.push(`Walls: ${currentGame.wallMode} active=${wallInfo.name} ${hexColor(wallInfo.color)}`);
   return lines;
 }
 
@@ -4394,6 +4660,7 @@ document.getElementById("startRound").addEventListener("click", () => {
   const aiCount = Math.min(Number(document.getElementById("aiCount").value), count - 1);
   const tankType = Number(document.getElementById("tankSelect").value);
   const maxWind = Number(document.getElementById("singlePlayerWind").value);
+  const wallType = document.getElementById("singlePlayerWalls").value;
   const changingWinds = document.getElementById("singlePlayerChangingWinds").checked;
   const unlimitedInventory = document.getElementById("singlePlayerUnlimitedInventory").checked;
   const initialCash = Number(document.getElementById("singlePlayerCash").value);
@@ -4401,10 +4668,12 @@ document.getElementById("startRound").addEventListener("click", () => {
   document.getElementById("aiCount").value = String(aiCount);
   game.resize(width, height);
   game.maxWind = Number.isFinite(maxWind) ? Math.max(0, Math.trunc(maxWind)) : PhysicsMaxWind();
+  game.wallMode = validWallType(wallType);
   game.changingWinds = changingWinds;
   game.unlimitedInventory = unlimitedInventory;
   INITIAL_CASH = Number.isFinite(initialCash) ? Math.max(0, Math.trunc(initialCash)) : DEFAULT_INITIAL_CASH;
   singlePlayerSettings.maxWind = game.maxWind;
+  singlePlayerSettings.wallType = game.wallMode;
   singlePlayerSettings.changingWinds = game.changingWinds;
   singlePlayerSettings.unlimitedInventory = game.unlimitedInventory;
   singlePlayerSettings.initialCash = INITIAL_CASH;

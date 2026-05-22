@@ -349,6 +349,7 @@ function gameList() {
     started: game.started,
     resolution: game.resolution,
     maxWind: game.maxWind,
+    wallType: game.wallType,
     changingWinds: game.changingWinds,
     unlimitedInventory: game.unlimitedInventory,
     initialCash: game.initialCash,
@@ -450,6 +451,7 @@ function lobbyState(room, selfClientId = null) {
     selfPlayerId: playerIdForClient(room, selfClientId),
     resolution: room.resolution,
     maxWind: room.maxWind,
+    wallType: room.wallType,
     changingWinds: room.changingWinds,
     unlimitedInventory: room.unlimitedInventory,
     initialCash: room.initialCash,
@@ -468,6 +470,13 @@ function validResolution(value) {
 function validMaxWind(value) {
   const wind = Number(value);
   return [0, 5, 10, 20].includes(wind) ? wind : 10;
+}
+
+function validWallType(value) {
+  const wallType = String(value || "none").toLowerCase();
+  return ["none", "concrete", "padded", "rubber", "spring", "wraparound", "random", "erratic"].includes(wallType)
+    ? wallType
+    : "none";
 }
 
 function validInitialCash(value) {
@@ -527,6 +536,7 @@ function startPayload(room, member, type = "start") {
     resolution: room.resolution,
     maxWind: room.maxWind,
     wind: room.wind,
+    wallType: room.wallType,
     changingWinds: room.changingWinds,
     unlimitedInventory: room.unlimitedInventory,
     initialCash: room.initialCash,
@@ -614,6 +624,7 @@ function createRoom(client, payload) {
     seed: null,
     resolution: validResolution(payload.resolution),
     maxWind: validMaxWind(payload.maxWind),
+    wallType: validWallType(payload.wallType),
     changingWinds: !!payload.changingWinds,
     unlimitedInventory: !!payload.unlimitedInventory,
     initialCash: validInitialCash(payload.initialCash),
@@ -647,7 +658,7 @@ function createRoom(client, payload) {
   games.set(room.code, room);
   scheduleAutoStart(room);
   updateConcurrentGameRecord();
-  log("game.create", `game=${room.code} title="${room.title}" private=${room.private} host=${client.name} resolution=${room.resolution} wind=${room.maxWind} changingWinds=${room.changingWinds} unlimitedInventory=${room.unlimitedInventory} cash=${room.initialCash} rounds=${room.rounds}`);
+  log("game.create", `game=${room.code} title="${room.title}" private=${room.private} host=${client.name} resolution=${room.resolution} wind=${room.maxWind} walls=${room.wallType} changingWinds=${room.changingWinds} unlimitedInventory=${room.unlimitedInventory} cash=${room.initialCash} rounds=${room.rounds}`);
   send(client.socket, lobbyState(room, client.id));
   broadcastGameList();
   scheduleStatsWrite();
@@ -716,7 +727,7 @@ function startRoom(client) {
   room.currentRound = 1;
   room.startedAt = Date.now();
   updateConcurrentGameRecord();
-  log("game.start", `game=${room.code} round=${room.currentRound}/${room.rounds} seed=${room.seed} resolution=${room.resolution} wind=${room.maxWind} changingWinds=${room.changingWinds} unlimitedInventory=${room.unlimitedInventory} cash=${room.initialCash} participants=${room.participants.map((p) => p.name).join(",")}`);
+  log("game.start", `game=${room.code} round=${room.currentRound}/${room.rounds} seed=${room.seed} resolution=${room.resolution} wind=${room.maxWind} walls=${room.wallType} changingWinds=${room.changingWinds} unlimitedInventory=${room.unlimitedInventory} cash=${room.initialCash} participants=${room.participants.map((p) => p.name).join(",")}`);
   for (const member of room.clients) send(member.socket, startPayload(room, member));
   if (!room.initialPreparing) beginAutoDefenseIfNeeded(room);
   broadcastGameList();

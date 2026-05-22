@@ -67,6 +67,7 @@
         <button id="newRound">New Round</button>
       </div>
       <div class="round-readout" id="roundOut">Round 1 out of 1</div>
+      <div class="wall-readout" id="wallOut">Walls: None</div>
     </aside>
   </main>
 
@@ -217,6 +218,17 @@
           <option value="10" selected>Normal</option>
           <option value="20">Strong</option>
         </select>
+        <label for="multiplayerWalls">Walls</label>
+        <select id="multiplayerWalls">
+          <option value="none" selected>None</option>
+          <option value="concrete">Concrete</option>
+          <option value="padded">Padded</option>
+          <option value="rubber">Rubber</option>
+          <option value="spring">Spring</option>
+          <option value="wraparound">Wraparound</option>
+          <option value="random">Random</option>
+          <option value="erratic">Erratic</option>
+        </select>
         <label for="multiplayerChangingWinds">Changing winds</label>
         <label class="checkbox-row"><input id="multiplayerChangingWinds" type="checkbox"> <span>Change wind after every turn</span></label>
         <label for="multiplayerUnlimitedInventory">Unlimited items</label>
@@ -313,6 +325,17 @@
           <option value="5">Light</option>
           <option value="10" selected>Normal</option>
           <option value="20">Strong</option>
+        </select>
+        <label for="singlePlayerWalls">Walls</label>
+        <select id="singlePlayerWalls">
+          <option value="none" selected>None</option>
+          <option value="concrete">Concrete</option>
+          <option value="padded">Padded</option>
+          <option value="rubber">Rubber</option>
+          <option value="spring">Spring</option>
+          <option value="wraparound">Wraparound</option>
+          <option value="random">Random</option>
+          <option value="erratic">Erratic</option>
         </select>
         <label for="singlePlayerChangingWinds">Changing winds</label>
         <label class="checkbox-row"><input id="singlePlayerChangingWinds" type="checkbox"> <span>Change wind after every turn</span></label>

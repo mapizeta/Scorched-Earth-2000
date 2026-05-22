@@ -232,7 +232,8 @@ button:disabled {
   margin: 0 9px 5px;
 }
 
-.round-readout {
+.round-readout,
+.wall-readout {
   position: relative;
   z-index: 1;
   margin: auto 9px 0;
@@ -244,6 +245,12 @@ button:disabled {
   background: #999;
   border: 3px solid;
   border-color: #777 #fff #fff #777;
+}
+
+.wall-readout {
+  margin-top: 4px;
+  border-width: 2px;
+  background: #aaa;
 }
 
 .buttons button,
