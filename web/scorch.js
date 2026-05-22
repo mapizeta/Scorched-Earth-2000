@@ -1174,7 +1174,7 @@ class ScorchGame {
         break;
       }
       if (wall.kind === "bounced" || wall.kind === "wrapped") {
-        if (tracerTrail) tracerTrail.push([x, y]);
+        if (tracerTrail) tracerTrail.push([x, y, wall.kind === "wrapped"]);
         prevX = x;
         prevY = y;
         this.drawWorld();
@@ -1249,7 +1249,7 @@ class ScorchGame {
     for (let i = 1; i < points.length; i++) {
       const previous = points[i - 1];
       const current = points[i];
-      if (Math.abs(current[0] - previous[0]) > WIDTH / 2) {
+      if (current[2] || Math.abs(current[0] - previous[0]) > WIDTH / 2) {
         this.ctx.moveTo(current[0] + 0.5, current[1] + 0.5);
       } else {
         this.ctx.lineTo(current[0] + 0.5, current[1] + 0.5);
@@ -1277,8 +1277,10 @@ class ScorchGame {
     if (projectile.wallEvents > (projectile.maxWallEvents ?? 64)) return { kind: "escaped", x, y };
     if (wallType === "wraparound" && (x < 0 || x >= WIDTH)) {
       const wrappedX = ((x % WIDTH) + WIDTH) % WIDTH;
+      const currentVy = projectile.vy - EARTH_GRAVITY * projectile.step * STEP_SIZE;
       projectile.startX = wrappedX;
       projectile.startY = HEIGHT - y;
+      projectile.vy = currentVy;
       projectile.step = 0;
       projectile.prevX = wrappedX;
       projectile.prevY = y;
@@ -1290,9 +1292,14 @@ class ScorchGame {
     const wallX = x < 0 ? 0 : (x >= WIDTH ? WIDTH - 1 : x);
     const wallY = y < 0 ? 0 : y;
     if (wallType === "concrete") return { kind: "hit", x: wallX, y: wallY };
-    const scale = wallType === "padded" ? 0.62 : (wallType === "spring" ? 1.18 : 1);
+    const scale = wallType === "padded" ? 0.55 : (wallType === "spring" ? 1.18 : 1);
+    const currentVy = projectile.vy - EARTH_GRAVITY * projectile.step * STEP_SIZE;
     if (hitVertical) projectile.vx = -projectile.vx * scale;
-    if (hitTop) projectile.vy = -(projectile.vy - EARTH_GRAVITY * projectile.step * STEP_SIZE) * scale;
+    if (hitTop) projectile.vy = -currentVy * scale;
+    if (wallType === "padded") {
+      if (hitVertical) projectile.vy = currentVy * 0.75;
+      if (hitTop) projectile.vx *= 0.75;
+    }
     projectile.startX = wallX;
     projectile.startY = HEIGHT - wallY;
     projectile.step = 0;
@@ -1403,7 +1410,7 @@ class ScorchGame {
         return;
       }
       if (wall.kind === "bounced" || wall.kind === "wrapped") {
-        if (mainTrail) mainTrail.push([x, y]);
+        if (mainTrail) mainTrail.push([x, y, wall.kind === "wrapped"]);
         prevX = x;
         prevY = y;
         this.drawWorld();
@@ -1480,7 +1487,7 @@ class ScorchGame {
           continue;
         }
         if (wall.kind === "bounced" || wall.kind === "wrapped") {
-          if (particle.trail) particle.trail.push([x, y]);
+          if (particle.trail) particle.trail.push([x, y, wall.kind === "wrapped"]);
           this.ctx.fillStyle = "#fff";
           this.ctx.fillRect(x - 1, y - 1, 3, 3);
           particle.prevX = x;
@@ -1714,7 +1721,7 @@ class ScorchGame {
           continue;
         }
         if (wall.kind === "bounced" || wall.kind === "wrapped") {
-          if (py >= 0) particle.trail.push([px, py]);
+          if (py >= 0) particle.trail.push([px, py, wall.kind === "wrapped"]);
           particle.prevX = px;
           particle.prevY = py;
           particle.step += 1;
@@ -1767,7 +1774,13 @@ class ScorchGame {
       this.ctx.beginPath();
       this.ctx.moveTo(particle.trail[0][0] + 0.5, particle.trail[0][1] + 0.5);
       for (let i = 1; i < particle.trail.length; i++) {
-        this.ctx.lineTo(particle.trail[i][0] + 0.5, particle.trail[i][1] + 0.5);
+        const previous = particle.trail[i - 1];
+        const current = particle.trail[i];
+        if (current[2] || Math.abs(current[0] - previous[0]) > WIDTH / 2) {
+          this.ctx.moveTo(current[0] + 0.5, current[1] + 0.5);
+        } else {
+          this.ctx.lineTo(current[0] + 0.5, current[1] + 0.5);
+        }
       }
       this.ctx.stroke();
     }
