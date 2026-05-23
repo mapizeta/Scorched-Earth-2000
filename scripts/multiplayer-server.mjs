@@ -1139,7 +1139,11 @@ function broadcastRoundWaiting(room, readySet, waitingClientsList) {
 function relayShop(client, payload) {
   const room = client.room;
   if (!room?.started) return;
-  const playerId = playerIdForClient(room, client.id);
+  let playerId = playerIdForClient(room, client.id);
+  const requestedPlayerId = Number(payload.playerId);
+  if (Number.isInteger(requestedPlayerId) && room.participants[requestedPlayerId]?.kind === "ai" && client.id === room.hostId) {
+    playerId = requestedPlayerId;
+  }
   if (playerId < 0) return;
   const participant = room.participants[playerId];
   participant.weapons = Array.isArray(payload.weapons) ? payload.weapons.map((value) => Number(value) || 0) : participant.weapons;

@@ -1531,11 +1531,11 @@ class ScorchGame {
     if (impacts.length) await this.explodeMany(impacts, player);
     this.nextTurn("MIRV complete.");
   }
-  laserEndpoint(player, weapon) {
-    const startX = player.turretX(2);
-    const startY = player.turretY(2);
-    const angle = player.angle * Math.PI / 180;
-    const range = Math.max(80, Math.round(player.power * 0.9));
+  laserEndpoint(player, weapon, angleDeg = player.angle, power = player.power) {
+    const angle = angleDeg * Math.PI / 180;
+    const startX = player.x + player.sprite[0][0] + Math.trunc(player.sprite[0][2] * 2 * Math.cos(angle));
+    const startY = player.y + player.sprite[0][1] - Math.trunc(player.sprite[0][2] * 2 * Math.sin(angle));
+    const range = Math.max(80, Math.round(power * 0.9));
     const dx = Math.cos(angle);
     const dy = -Math.sin(angle);
     let endX = startX + dx * range;
@@ -2650,7 +2650,9 @@ class ScorchGame {
     let weaponIndex = this.chooseAiWeapon(player);
     let weapon = WEAPONS[weaponIndex];
     if (player.aiType === 2) this.prepareShotWallType();
-    const shot = await this.findAiShot(player, weapon);
+    const shot = weapon.kind === "laser"
+      ? await this.findAiLaserShot(player, weapon)
+      : await this.findAiShot(player, weapon);
     if (this.players[this.active] !== player || this.roundOver) {
       this.animating = false;
       setControlsDisabled(false);
@@ -2696,7 +2698,7 @@ class ScorchGame {
   chooseAiWeapon(player) {
     const choices = WEAPONS
       .map((weapon, index) => ({ weapon, index, qty: player.weapons[index] ?? 0 }))
-      .filter(({ weapon, qty }) => qty > 0 && weapon.kind !== "laser");
+      .filter(({ qty }) => qty > 0);
     if (!choices.length) return usableWeaponIndex(player, 0);
     if (choices.length === 1) return choices[0].index;
     const maxPrice = Math.max(1, ...choices.map(({ weapon }) => weapon.price || 0));
@@ -2730,7 +2732,38 @@ class ScorchGame {
     if (weapon.kind === "mirv") return Math.round((weapon.radius || 10) * Math.min(3.2, 1 + (weapon.particles || 1) * 0.24));
     if (weapon.kind === "napalm") return Math.round((weapon.radius || 80) * 0.45);
     if (weapon.kind === "digger") return Math.max(18, Math.round((weapon.radius || 24) * 0.9));
+    if (weapon.kind === "laser") return Math.max(24, Math.round((weapon.beamWidth || 5) * 8));
     return weapon.radius || 10;
+  }
+  async findAiLaserShot(player, weapon = WEAPONS[16]) {
+    const accuracy = AI_ACCURACY[player.aiType] ?? 5;
+    const path = [];
+    let best = this.searchAiLaserCandidates(player, weapon, path, {
+      angleCenter: player.angle,
+      angleSpan: 180,
+      angleStep: Math.max(4, accuracy * 2),
+      powerCenter: player.power,
+      powerSpan: player.powerLimit,
+      powerStep: Math.max(40, accuracy * 20)
+    });
+
+    if (best.score > 0) {
+      best = this.searchAiLaserCandidates(player, weapon, path, {
+        angleCenter: best.angle,
+        angleSpan: Math.max(8, accuracy * 5),
+        angleStep: Math.max(1, accuracy),
+        powerCenter: best.power,
+        powerSpan: Math.max(120, accuracy * 40),
+        powerStep: Math.max(15, accuracy * 5)
+      }, best);
+      const shot = this.applyAiInaccuracy(player, { angle: best.angle, power: best.power });
+      await this.animateAiAim(player, path, shot);
+      return shot;
+    }
+
+    const shot = this.closestOpponentFallbackShot(player);
+    await this.animateAiAim(player, path, shot);
+    return shot;
   }
   async findAiShot(player, weapon = WEAPONS[0]) {
     const accuracy = AI_ACCURACY[player.aiType] ?? 5;
@@ -2863,6 +2896,40 @@ class ScorchGame {
       }
     }
     return best;
+  }
+  searchAiLaserCandidates(player, weapon, path, options, best = { score: 0, angle: player.angle, power: player.power }) {
+    const angleStart = Math.max(0, Math.round(options.angleCenter - options.angleSpan / 2));
+    const angleEnd = Math.min(179, Math.round(options.angleCenter + options.angleSpan / 2));
+    const powerStart = Math.max(MIN_POWER, Math.round(options.powerCenter - options.powerSpan / 2));
+    const powerEnd = Math.min(player.powerLimit, Math.round(options.powerCenter + options.powerSpan / 2));
+    let candidateCount = 0;
+    for (let angle = angleStart; angle <= angleEnd; angle += options.angleStep) {
+      for (let power = powerStart; power <= powerEnd; power += options.powerStep) {
+        candidateCount++;
+        if (candidateCount % 5 === 1) this.recordAiAimCandidate(path, angle, power);
+        const beam = this.laserEndpoint(player, weapon, angle, power);
+        const score = this.scoreAiLaserBeam(beam, weapon, player);
+        if (score > best.score) {
+          best = { score, angle, power };
+          this.recordAiAimCandidate(path, angle, power, true);
+        }
+      }
+    }
+    return best;
+  }
+  scoreAiLaserBeam(beam, weapon, shooter) {
+    let score = 0;
+    const radius = Math.max(1, Math.floor((weapon.beamWidth ?? 5) / 2));
+    for (const target of this.players) {
+      if (!target.alive) continue;
+      if (!this.laserHitsPlayer(beam, radius, target)) continue;
+      const center = this.tankCenter(target);
+      const centerDistance = pointToSegmentDistance(center.x, center.y, beam.x1, beam.y1, beam.x2, beam.y2);
+      const damage = Math.max(500, Math.round((weapon.damage ?? 880) - centerDistance * 12));
+      if (target === shooter) score -= damage * MAX_PLAYERS_PENALTY();
+      else score += damage * this.aiTargetPriority(shooter, target);
+    }
+    return score;
   }
   recordAiAimCandidate(path, angle, power, force = false) {
     const last = path[path.length - 1];
@@ -3144,6 +3211,7 @@ function suggestedGameName(playerName) {
 const game = new ScorchGame(document.getElementById("field"));
 
 function startNextSinglePlayerRound() {
+  if (singlePlayerSettings.initialCash > 0 && !singlePlayerSettings.unlimitedInventory) buyAiInventories(false);
   singlePlayerSettings.currentRound = Math.min(
     singlePlayerSettings.rounds,
     singlePlayerSettings.currentRound + 1
@@ -3575,6 +3643,7 @@ class MultiplayerSession {
   sendShopUpdate(player) {
     this.send({
       type: "shop-update",
+      playerId: player.id,
       weapons: player.weapons,
       items: player.items,
       cash: player.cash
@@ -4486,6 +4555,7 @@ function finishShopSession(player, mode, message, sendUpdate = false) {
   shopPlayer = null;
   if (multiplayer.started) {
     if (sendUpdate && player) multiplayer.sendShopUpdate(player);
+    if (multiplayer.clientId === multiplayer.hostId && !multiplayer.settings.unlimitedInventory) buyAiInventories(true);
     if (mode === "between-round" || mode === "initial") {
       multiplayer.readyForNextRound();
       game.render(message);
@@ -4533,9 +4603,102 @@ function renderShop() {
 
 function shopRows(player) {
   return [
-    ...WEAPONS.map((weapon, index) => ({ ...weapon, index, qty: player.weapons[index], kind: "weapon" })),
+    ...WEAPONS.map((weapon, index) => ({ ...weapon, weaponKind: weapon.kind, index, qty: player.weapons[index], kind: "weapon" })),
     ...ITEMS.map((item, index) => ({ ...item, index, qty: player.items[index], kind: "item" }))
   ];
+}
+
+function buyAiInventories(sendUpdates = false) {
+  if (game.unlimitedInventory) return;
+  for (const player of game.players) {
+    if (!player?.ai) continue;
+    if (buyAiInventory(player) && sendUpdates && multiplayer.started) multiplayer.sendShopUpdate(player);
+  }
+}
+
+function buyAiInventory(player) {
+  const before = player.cash;
+  if (!Number.isFinite(player.cash) || player.cash <= 0) return false;
+  if (player.aiType === 0) buyShooterInventory(player);
+  else if (player.aiType === 1) buyCyborgInventory(player);
+  else buyKillerInventory(player);
+  player.preferredWeapon = preferredWeaponFor(player, player.preferredWeapon);
+  return player.cash !== before;
+}
+
+function buyShooterInventory(player) {
+  while (player.cash > 0) {
+    const choices = aiAffordableRows(player);
+    if (!choices.length) return;
+    aiPurchaseRow(player, choices[Math.floor(Math.random() * choices.length)]);
+  }
+}
+
+function buyCyborgInventory(player) {
+  while (player.cash > 0) {
+    const choices = aiAffordableRows(player).sort((a, b) =>
+      aiPurchasePower(b) - aiPurchasePower(a) || b.price - a.price
+    );
+    if (!choices.length) return;
+    aiPurchaseRow(player, choices[0]);
+  }
+}
+
+function buyKillerInventory(player) {
+  const defensiveTypes = new Set(["interceptor", "shield", "parachute", "autodefense"]);
+  let defenseBuys = 0;
+  while (player.cash > 0) {
+    const choices = aiAffordableRows(player);
+    if (!choices.length) return;
+    const lethal = choices
+      .filter((row) => row.kind === "weapon")
+      .sort((a, b) => aiPurchasePower(b) - aiPurchasePower(a) || b.price - a.price);
+    const defense = choices
+      .filter((row) => row.kind === "item" && defensiveTypes.has(row.type))
+      .sort((a, b) => aiPurchasePower(b) - aiPurchasePower(a) || b.price - a.price);
+    const pickDefense = defenseBuys < 2 && defense.length && (!lethal.length || Math.random() < 0.28);
+    if (pickDefense) {
+      aiPurchaseRow(player, defense[0]);
+      defenseBuys++;
+    } else if (lethal.length) {
+      aiPurchaseRow(player, lethal[0]);
+    } else {
+      aiPurchaseRow(player, choices.sort((a, b) => aiPurchasePower(b) - aiPurchasePower(a))[0]);
+    }
+  }
+}
+
+function aiAffordableRows(player) {
+  return shopRows(player).filter((row) => {
+    if (row.price <= 0 || player.cash < row.price) return false;
+    const max = row.max ? row.max : Infinity;
+    return row.qty + row.bundle <= max;
+  });
+}
+
+function aiPurchaseRow(player, row) {
+  if (!row || player.cash < row.price) return false;
+  if (row.kind === "weapon") player.weapons[row.index] += row.bundle;
+  else player.items[row.index] += row.bundle;
+  player.cash -= row.price;
+  return true;
+}
+
+function aiPurchasePower(row) {
+  if (row.kind === "weapon") {
+    const radius = row.kind === "weapon" ? (row.radius || 0) : 0;
+    const particles = row.particles || 1;
+    const laser = row.weaponKind === "laser" ? (row.damage || 880) * 0.1 + (row.beamWidth || 5) * 20 : 0;
+    return radius * Math.min(3.5, 1 + particles * 0.22) + laser + row.price / 1200;
+  }
+  if (row.type === "shield") return 80 + (row.strength || 0) * 55 + row.price / 1500;
+  if (row.type === "interceptor") return 170;
+  if (row.type === "autodefense") return 115;
+  if (row.type === "battery") return 90;
+  if (row.type === "parachute") return 65;
+  if (row.type === "fuel") return 50;
+  if (row.type === "tracer") return 25;
+  return row.price / 1000;
 }
 
 function shopOrderCost(rows = shopRows(shopPlayer ?? localHumanPlayer())) {
@@ -4697,6 +4860,7 @@ document.getElementById("startRound").addEventListener("click", () => {
   game.newRound();
   document.getElementById("roundSetup").classList.add("hidden");
   if (singlePlayerSettings.initialCash > 0 && !singlePlayerSettings.unlimitedInventory) {
+    buyAiInventories(false);
     setControlsDisabled(true);
     openShop("initial", localShopPlayers());
   } else {
@@ -4882,6 +5046,7 @@ document.getElementById("playNextRound").addEventListener("click", () => {
     document.getElementById("multiplayerBox").classList.remove("hidden");
     setControlsDisabled(true);
   } else if (multiplayer.started) {
+    if (multiplayer.clientId === multiplayer.hostId && !multiplayer.settings.unlimitedInventory) buyAiInventories(true);
     multiplayer.readyForNextRound();
     game.render("Waiting for next round...");
     setControlsDisabled(true);
