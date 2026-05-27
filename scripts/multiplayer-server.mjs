@@ -16,6 +16,7 @@ let nextClientId = 1;
 let statsWritePending = false;
 const serverMetrics = {
   completedGames: 0,
+  desyncedGames: 0,
   maxConcurrentGames: 0,
   maxConcurrentPlayers: 0,
   longestGameMs: 0,
@@ -173,6 +174,7 @@ function serverSummary() {
   return {
     games: gameEntries.length,
     completedGames: serverMetrics.completedGames,
+    desyncedGames: serverMetrics.desyncedGames,
     waiting: gameEntries.filter((game) => !game.started).length,
     playing: gameEntries.filter((game) => game.started).length,
     humans,
@@ -274,6 +276,7 @@ function renderStatsHtml() {
     <span>Connections: ${summary.connections}</span>
     <span>Games: ${summary.games}</span>
     <span>Completed games: ${summary.completedGames}</span>
+    <span>Desynced games: ${summary.desyncedGames}</span>
     <span>Waiting: ${summary.waiting}</span>
     <span>Playing: ${summary.playing}</span>
     <span>Human players: ${summary.humans}</span>
@@ -811,7 +814,8 @@ function relayFire(client, payload) {
     const missing = expected.filter((id) => !room.turnReports.has(id));
     if (missing.length) endDesyncedGame(room, `turn=${room.turnId} missing_reports=${missing.join(",")}`);
   }, TURN_REPORT_TIMEOUT_MS);
-  log("game.fire", `game=${room.code} turn=${room.turnId} player=${playerId} angle=${payload.angle} power=${payload.power} weapon=${payload.weapon || 0}`);
+  const wallType = validWallType(payload.wallType);
+  log("game.fire", `game=${room.code} turn=${room.turnId} player=${playerId} angle=${payload.angle} power=${payload.power} weapon=${payload.weapon || 0} wall=${wallType}`);
   broadcast(room, {
     type: "fire",
     turnId: room.turnId,
@@ -819,7 +823,8 @@ function relayFire(client, payload) {
     playerId,
     angle: Number(payload.angle),
     power: Number(payload.power),
-    weapon: Number(payload.weapon || 0)
+    weapon: Number(payload.weapon || 0),
+    wallType
   });
 }
 
@@ -875,6 +880,8 @@ function beginMassKill(room, client) {
 function endDesyncedGame(room, reason) {
   if (!room?.started) return;
   room.started = false;
+  serverMetrics.desyncedGames += 1;
+  recordGameDuration(room);
   if (room.turnReportTimer) clearTimeout(room.turnReportTimer);
   room.turnReportTimer = null;
   log("game.desync", `game=${room.code} ${reason}`);

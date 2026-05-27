@@ -31,8 +31,8 @@ const WEAPONS = [
   { name: "Heavy Digger", radius: 54, ammo: 0, price: 6000, bundle: 1, kind: "digger", duration: 5000 },
   { name: "Funky Bomb", radius: 38, ammo: 0, price: 30000, bundle: 1, kind: "funky", particles: 6 },
   { name: "Funky Nuke", radius: 62, ammo: 0, price: 50000, bundle: 1, kind: "funky", particles: 10 },
-  { name: "Napalm", radius: 140, ammo: 0, price: 10000, bundle: 1, kind: "napalm", hot: false },
-  { name: "Hot Napalm", radius: 280, ammo: 0, price: 20000, bundle: 1, kind: "napalm", hot: true },
+  { name: "Napalm", radius: 140, ammo: 0, price: 10000, bundle: 1, kind: "napalm", hot: false, volume: 140 },
+  { name: "Hot Napalm", radius: 280, ammo: 0, price: 20000, bundle: 1, kind: "napalm", hot: true, volume: 420 },
   { name: "MIRV", radius: 25, ammo: 0, price: 35000, bundle: 1, kind: "mirv", particles: 5 },
   { name: "Death Head", radius: 55, ammo: 0, price: 90000, bundle: 1, kind: "mirv", particles: 9 },
   { name: "Laser", ammo: 0, price: 25000, bundle: 1, kind: "laser", beamWidth: 5, damage: 880 }
@@ -71,6 +71,8 @@ var mobileAimRadar = null;
 var mobileAimPower = null;
 var mobileAimAngle = null;
 var forceMobileAimMode = false;
+var simulationSpeed = 1;
+const SIMULATION_SPEEDS = [1, 8, 32];
 const AI_NAMES = ["Shooter", "Cyborg", "Killer"];
 const AI_ACCURACY = [5, 4, 2];
 const AI_RADIUS_FACTOR = [3.0, 2.0, 1.5];
@@ -406,6 +408,7 @@ class ScorchGame {
     this.wallMode = "none";
     this.activeWallType = "none";
     this.pendingShotWallType = null;
+    this.forcedShotWallType = null;
     this.weapon = 0;
     this.animating = false;
     this.roundOver = false;
@@ -421,6 +424,9 @@ class ScorchGame {
     this.galslaMode = false;
     this.galslaTimer = null;
     this.statsSnapshot = [];
+    this.roundActionLog = [];
+    this.roundActionSequence = 0;
+    this.aiTurnToken = 0;
     this.resize(WIDTH, HEIGHT);
     this.rebuildPlayers(4, 2);
     this.newRound(false);
@@ -515,6 +521,14 @@ class ScorchGame {
     return this.randomShotWallType();
   }
   shotWallType() {
+    if (this.forcedShotWallType) {
+      const hadPreparedShotWallType = !!this.pendingShotWallType;
+      if (this.wallMode === "erratic" && !hadPreparedShotWallType) this.randomShotWallType();
+      this.activeWallType = validWallType(this.forcedShotWallType);
+      this.forcedShotWallType = null;
+      this.pendingShotWallType = null;
+      return this.activeWallType;
+    }
     this.activeWallType = this.pendingShotWallType || (this.wallMode === "erratic" ? this.randomShotWallType() : this.roundWallType());
     this.pendingShotWallType = null;
     return this.activeWallType;
@@ -599,6 +613,10 @@ class ScorchGame {
     }
     this.roundOver = false;
     this.pendingShotWallType = null;
+    this.forcedShotWallType = null;
+    this.roundActionLog = [];
+    this.roundActionSequence = 0;
+    this.aiTurnToken = 0;
     this.bitmap = new Bitmap(WIDTH, HEIGHT, this.rand);
     this.activeWallType = this.chooseRoundWallType();
     this.groundColor = this.randomBackground();
@@ -624,6 +642,60 @@ class ScorchGame {
     this.render("New round.");
     if (resetControls) setControlsDisabled(false);
     this.scheduleAiTurn();
+  }
+  logRoundAction(type, details = {}) {
+    this.roundActionLog.push({
+      index: ++this.roundActionSequence,
+      type,
+      activeTurnId: globalThis.multiplayerSession?.activeTurnId ?? null,
+      active: this.active,
+      rngSeed: this.rand.seed >>> 0,
+      groundChecksum: this.bitmap ? this.groundChecksum() : "n/a",
+      ...details
+    });
+    if (this.roundActionLog.length > 160) this.roundActionLog.splice(0, this.roundActionLog.length - 160);
+    updateDebugConsole(this);
+  }
+  logShotFired(player, weaponIndex, weapon, wallType = null) {
+    this.logRoundAction("shot", {
+      playerId: player?.id ?? null,
+      playerName: player?.name ?? "unknown",
+      angle: player?.angle ?? null,
+      power: player?.power ?? null,
+      powerLimit: player?.powerLimit ?? null,
+      weaponIndex,
+      weaponName: weapon?.name ?? "unknown",
+      weaponKind: weapon?.kind ?? "unknown",
+      ammoBefore: player?.weapons?.[weaponIndex] ?? null,
+      wallType: wallType || this.forcedShotWallType || this.pendingShotWallType || this.activeWallType || this.roundWallType(),
+      wind: this.wind
+    });
+  }
+  logItemUse(player, itemIndex, arg, ok, before = {}) {
+    const item = ITEMS[itemIndex];
+    this.logRoundAction("item", {
+      playerId: player?.id ?? null,
+      playerName: player?.name ?? "unknown",
+      itemIndex,
+      itemName: item?.name ?? "unknown",
+      itemType: item?.type ?? "unknown",
+      arg,
+      ok: !!ok,
+      qtyBefore: before.qty ?? null,
+      qtyAfter: player?.items?.[itemIndex] ?? null,
+      angle: player?.angle ?? null,
+      power: player?.power ?? null,
+      powerLimit: player?.powerLimit ?? null,
+      position: player ? `${player.x},${player.y}` : "n/a"
+    });
+  }
+  logTurnComplete(turnId, playerId, checksum) {
+    this.logRoundAction("complete", {
+      turnId,
+      playerId,
+      checksum,
+      alive: this.players.filter((entry) => entry.alive).map((entry) => entry.id).join(",")
+    });
   }
   applyAutoDefense(player) {
     if (!player.autoDefense || player.items[6] <= 0) return;
@@ -1129,22 +1201,26 @@ class ScorchGame {
     setControlsDisabled(true);
     beep(170, 0.04);
     const weapon = WEAPONS[this.weapon];
+    const wallType = weapon.kind === "laser" ? "none" : this.shotWallType();
+    this.logShotFired(player, this.weapon, weapon, wallType);
     player.lastWeapon = this.weapon;
     player.preferredWeapon = this.weapon;
     if (!weapon.infinite) player.weapons[this.weapon] = Math.max(0, player.weapons[this.weapon] - 1);
+    if (weapon.kind === "laser") {
+      this.pendingShotWallType = null;
+      this.forcedShotWallType = null;
+      await this.fireLaser(player, weapon);
+      this.finishShot("Turn complete.", firedPlayerId);
+      return;
+    }
     const useTracer = player.tracer && player.items[5] > 0;
     if (useTracer) {
       player.items[5]--;
       if (player.items[5] <= 0) player.tracer = false;
     }
     if (weapon.kind === "mirv") {
-      const result = await this.fireMirv(player, weapon, useTracer);
+      const result = await this.fireMirv(player, weapon, useTracer, wallType);
       this.finishShot(result?.intercepted ? "Missile intercepted." : "Turn complete.", firedPlayerId);
-      return;
-    }
-    if (weapon.kind === "laser") {
-      await this.fireLaser(player, weapon);
-      this.finishShot("Turn complete.", firedPlayerId);
       return;
     }
     const startX = player.turretX(2);
@@ -1155,7 +1231,6 @@ class ScorchGame {
     const vy0 = speed * Math.sin(angle);
     let prevX = startX;
     let prevY = HEIGHT - startY;
-    const wallType = this.shotWallType();
     const projectile = { startX, startY, vx: vx0, vy: vy0, step: 0, prevX, prevY };
     const tracerTrail = useTracer ? this.createTracerTrail(player, [prevX, prevY]) : null;
     let hit = null;
@@ -1382,7 +1457,7 @@ class ScorchGame {
       await sleep(22);
     }
   }
-  async fireMirv(player, weapon, useTracer = false) {
+  async fireMirv(player, weapon, useTracer = false, wallType = this.shotWallType()) {
     const startX = player.turretX(2);
     const startY = HEIGHT - player.turretY(2);
     const angle = player.angle * Math.PI / 180;
@@ -1392,7 +1467,6 @@ class ScorchGame {
     let prevX = startX;
     let prevY = HEIGHT - startY;
     let apex = null;
-    const wallType = this.shotWallType();
     const mainProjectile = { startX, startY, vx: vx0, vy: vy0, step: 0, prevX, prevY };
     const mainTrail = useTracer ? this.createTracerTrail(player, [startX, HEIGHT - startY]) : null;
     this.render(`${player.name} fires ${weapon.name}.`);
@@ -1671,12 +1745,14 @@ class ScorchGame {
     const colors = [rgb(255, 0, 0), rgb(255, 200, 0), rgb(255, 255, 0), rgb(0, 255, 0), rgb(0, 127, 255), rgb(0, 0, 255)];
     const particles = [];
     const count = weapon.particles ?? 6;
+    const particleLog = [];
     for (let i = 0; i < count; i++) {
       const power = this.rand.int(500) / 8;
       const angleDeg = 20 + this.rand.int(140);
       const angle = angleDeg * Math.PI / 180;
       const xoffset = Math.trunc(Math.cos(angle) * 5);
       const yoffset = Math.trunc(Math.sin(angle) * 5);
+      particleLog.push(`${i}:${angleDeg}/${power.toFixed(3)}/${xoffset},${yoffset}`);
       particles.push({
         startX: x + xoffset,
         startY: HEIGHT - y + yoffset,
@@ -1690,6 +1766,14 @@ class ScorchGame {
         trail: [[x + xoffset, y - yoffset]]
       });
     }
+    this.logRoundAction("funky", {
+      playerId: shooter?.id ?? null,
+      playerName: shooter?.name ?? "unknown",
+      x,
+      y,
+      count,
+      particles: particleLog.join(" ")
+    });
 
     const impacts = [];
     const wallType = this.activeWallType;
@@ -1759,6 +1843,12 @@ class ScorchGame {
       this.bitmap.fillCircle(impact.x, impact.y, 30);
       for (const player of this.damagePlayers(impact.x, impact.y, 30, shooter)) deaths.add(player);
     }
+    this.logRoundAction("funky-impacts", {
+      playerId: shooter?.id ?? null,
+      playerName: shooter?.name ?? "unknown",
+      count: impacts.length,
+      impacts: impacts.map((impact) => `${impact.x},${impact.y}`).join(" ")
+    });
     this.drop(0, WIDTH);
     await this.settleTanks(shooter);
     for (const player of deaths) await this.randomTankExplosion(player);
@@ -1887,7 +1977,7 @@ class ScorchGame {
   }
   async napalm(x, y, weapon, shooter) {
     const color = weapon.hot ? rgb(254, 254, 0) : rgb(200, 200, 0);
-    const budget = weapon.hot ? 280 : 140;
+    const budget = weapon.volume ?? (weapon.hot ? 280 : 140);
     const burnDuration = weapon.hot ? 210 : 120;
     const cells = new Set();
     const addCell = (cx, cy, force = false) => {
@@ -2640,19 +2730,62 @@ class ScorchGame {
     if (!player || !player.alive || !player.ai || this.animating || this.roundOver || autoDefenseMode) return;
     const net = globalThis.multiplayerSession;
     if (net?.started && net.clientId !== net.hostId) return;
-    setTimeout(() => this.takeAiTurn(player), 650);
+    setTimeout(() => this.takeAiTurn(player), scaledDelay(650));
   }
   async takeAiTurn(player) {
     if (this.players[this.active] !== player || this.animating || this.roundOver || autoDefenseMode) return;
+    const turnToken = ++this.aiTurnToken;
     this.animating = true;
     setControlsDisabled(true);
     this.prepareAiDefenses(player);
     let weaponIndex = this.chooseAiWeapon(player);
     let weapon = WEAPONS[weaponIndex];
-    if (player.aiType === 2) this.prepareShotWallType();
-    const shot = weapon.kind === "laser"
-      ? await this.findAiLaserShot(player, weapon)
-      : await this.findAiShot(player, weapon);
+    let plannedWallType = null;
+    if (player.aiType === 2) plannedWallType = this.prepareShotWallType();
+    this.logRoundAction("ai-plan", {
+      playerId: player.id,
+      playerName: player.name,
+      weaponIndex,
+      weaponName: weapon.name,
+      weaponKind: weapon.kind,
+      angle: player.angle,
+      power: player.power,
+      powerLimit: player.powerLimit,
+      plannedWallType,
+      wind: this.wind
+    });
+    const watchdog = setTimeout(() => {
+      if (this.aiTurnToken !== turnToken || this.players[this.active] !== player || !this.animating || this.roundOver) return;
+      this.logRoundAction("ai-error", {
+        playerId: player.id,
+        playerName: player.name,
+        weaponIndex,
+        weaponName: weapon.name,
+        weaponKind: weapon.kind,
+        reason: "shot-selection-timeout"
+      });
+      this.aiTurnToken++;
+      this.finishAiTurnWithShot(player, weaponIndex, weapon, this.closestOpponentFallbackShot(player));
+    }, 5000);
+    let shot = null;
+    try {
+      shot = weapon.kind === "laser"
+        ? await this.findAiLaserShot(player, weapon)
+        : await this.findAiShot(player, weapon);
+    } catch (error) {
+      this.logRoundAction("ai-error", {
+        playerId: player.id,
+        playerName: player.name,
+        weaponIndex,
+        weaponName: weapon.name,
+        weaponKind: weapon.kind,
+        reason: error?.message || String(error)
+      });
+      shot = this.closestOpponentFallbackShot(player);
+    } finally {
+      clearTimeout(watchdog);
+    }
+    if (this.aiTurnToken !== turnToken) return;
     if (this.players[this.active] !== player || this.roundOver) {
       this.animating = false;
       setControlsDisabled(false);
@@ -2661,6 +2794,14 @@ class ScorchGame {
     if (shot.fallback) {
       weaponIndex = this.randomAiWeapon(player);
       weapon = WEAPONS[weaponIndex];
+    }
+    this.finishAiTurnWithShot(player, weaponIndex, weapon, shot);
+  }
+  finishAiTurnWithShot(player, weaponIndex, weapon, shot) {
+    if (!shot || this.players[this.active] !== player || this.roundOver) {
+      this.animating = false;
+      setControlsDisabled(false);
+      return;
     }
     player.angle = shot.angle;
     player.power = shot.power;
@@ -2671,6 +2812,17 @@ class ScorchGame {
     document.getElementById("power").value = String(player.power);
     this.render(`${player.name} fires ${weapon.name}.`);
     this.animating = false;
+    this.logRoundAction("ai-ready-fire", {
+      playerId: player.id,
+      playerName: player.name,
+      weaponIndex: this.weapon,
+      weaponName: weapon.name,
+      weaponKind: weapon.kind,
+      angle: player.angle,
+      power: player.power,
+      powerLimit: player.powerLimit,
+      pendingWallType: this.pendingShotWallType || "none"
+    });
     if (globalThis.multiplayerSession?.started) globalThis.multiplayerSession.fire();
     else this.fire();
   }
@@ -2679,16 +2831,20 @@ class ScorchGame {
     let used = false;
     const interceptorIndex = ITEMS.findIndex((item) => item.type === "interceptor");
     if (interceptorIndex >= 0 && !player.interceptorDrone?.active && player.items[interceptorIndex] > 0) {
+      const before = { qty: player.items[interceptorIndex] };
       player.items[interceptorIndex]--;
       this.createInterceptorDrone(player);
+      this.logItemUse(player, interceptorIndex, "ai-auto", true, before);
       used = true;
     }
     if (!player.shield) {
       for (const index of [2, 1, 0]) {
         if (player.items[index] <= 0) continue;
         const item = ITEMS[index];
+        const before = { qty: player.items[index] };
         player.items[index]--;
         player.shield = { strength: item.strength, maxStrength: item.strength, damage: item.damage, thickness: item.thickness };
+        this.logItemUse(player, index, "ai-auto", true, before);
         used = true;
         break;
       }
@@ -2726,7 +2882,9 @@ class ScorchGame {
       .map((weapon, index) => ({ weapon, index, qty: player.weapons[index] ?? 0 }))
       .filter(({ qty }) => qty > 0);
     if (!choices.length) return usableWeaponIndex(player, 0);
-    return choices[this.rand.int(choices.length)].index;
+    const noise = this.aiChoiceNoise(player, choices);
+    const index = Math.max(0, Math.min(choices.length - 1, Math.floor(noise * choices.length)));
+    return choices[index]?.index ?? usableWeaponIndex(player, 0);
   }
   aiWeaponRadius(weapon) {
     if (weapon.kind === "mirv") return Math.round((weapon.radius || 10) * Math.min(3.2, 1 + (weapon.particles || 1) * 0.24));
@@ -2823,7 +2981,7 @@ class ScorchGame {
     const angle = rawAngle < 0
       ? (dx < 0 ? 179 : 0)
       : Math.max(0, Math.min(179, Math.round(rawAngle)));
-    const powerNoise = this.rand.int(161) - 80;
+    const powerNoise = Math.round(this.aiNoise(player, { angle, power: Math.round(distance) }, 3) * 160) - 80;
     const power = Math.max(0, Math.min(player.powerLimit, Math.round(Math.max(START_POWER, distance * 2.2) + powerNoise)));
     return { angle, power, fallback: true };
   }
@@ -2858,7 +3016,7 @@ class ScorchGame {
     x ^= x >>> 13;
     x = Math.imul(x, 3266489909) >>> 0;
     x ^= x >>> 16;
-    return x / 0x100000000;
+    return (x >>> 0) / 0x100000000;
   }
   aiChoiceNoise(player, choices) {
     let x = (this.rand.seed ^ (player.id * 374761393) ^ (player.aiType * 668265263) ^ (this.active * 1442695041) ^ (this.wind * 2246822519)) >>> 0;
@@ -2874,7 +3032,7 @@ class ScorchGame {
     x ^= x >>> 13;
     x = Math.imul(x, 3266489909) >>> 0;
     x ^= x >>> 16;
-    return x / 0x100000000;
+    return (x >>> 0) / 0x100000000;
   }
   searchAiCandidates(player, radius, path, options, best = { score: 0, angle: player.angle, power: player.power }) {
     const angleStart = Math.max(0, Math.round(options.angleCenter - options.angleSpan / 2));
@@ -3147,7 +3305,11 @@ function writeLine(data, width, height, x1, y1, x2, y2, color) {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, scaledDelay(ms)));
+}
+
+function scaledDelay(ms) {
+  return Math.max(1, Math.round(ms / Math.max(1, simulationSpeed)));
 }
 
 let audioCtx = null;
@@ -3600,10 +3762,47 @@ class MultiplayerSession {
     this.send({ type: "aim", playerId: player.id, activeTurnId: this.activeTurnId, angle: player.angle, power: player.power });
   }
   fire() {
-    if (!this.isLocalTurn() || this.game.animating) return;
+    if (!this.isLocalTurn() || this.game.animating) {
+      const player = this.game.players[this.game.active];
+      this.game.logRoundAction("net-fire-blocked", {
+        reason: this.game.animating ? "animating" : "not-local-turn",
+        clientId: this.clientId,
+        hostId: this.hostId,
+        playerId: player?.id ?? this.game.active,
+        playerName: player?.name ?? "unknown",
+        active: this.game.active,
+        activeTurnId: this.activeTurnId,
+        playerAi: !!player?.ai
+      });
+      return;
+    }
     const player = this.game.players[this.game.active];
+    const weapon = WEAPONS[this.game.weapon];
+    const wallType = weapon?.kind === "laser"
+      ? "none"
+      : (this.game.pendingShotWallType || this.game.prepareShotWallType());
+    this.game.logRoundAction("net-fire-send", {
+      playerId: player.id,
+      playerName: player.name,
+      angle: player.angle,
+      power: player.power,
+      powerLimit: player.powerLimit,
+      weaponIndex: this.game.weapon,
+      weaponName: weapon?.name ?? "unknown",
+      weaponKind: weapon?.kind ?? "unknown",
+      wallType,
+      netTurnId: this.activeTurnId
+    });
     setControlsDisabled(true);
-    this.send({ type: "fire", playerId: this.game.active, activeTurnId: this.activeTurnId, angle: player.angle, power: player.power, weapon: this.game.weapon });
+    this.send({
+      type: "fire",
+      playerId: this.game.active,
+      activeTurnId: this.activeTurnId,
+      angle: player.angle,
+      power: player.power,
+      weapon: this.game.weapon,
+      wallType
+    });
   }
   massKill() {
     if (!this.started) return;
@@ -3665,6 +3864,7 @@ class MultiplayerSession {
   sendTurnComplete(message) {
     this.lastChecksum = this.game.checksum();
     this.game.captureStatsSnapshot();
+    this.game.logTurnComplete(message.turnId, message.playerId, this.lastChecksum);
     this.send({
       type: "turn-complete",
       turnId: message.turnId,
@@ -3852,6 +4052,20 @@ class MultiplayerSession {
       player.lastWeapon = this.game.weapon;
       player.preferredWeapon = this.game.weapon;
       if (player.ai) this.game.prepareAiDefenses(player);
+      this.game.forcedShotWallType = message.wallType || null;
+      this.game.logRoundAction("net-fire-recv", {
+        turnId: message.turnId,
+        netTurnId: message.activeTurnId,
+        playerId: player.id,
+        playerName: player.name,
+        angle: player.angle,
+        power: player.power,
+        powerLimit: player.powerLimit,
+        weaponIndex: this.game.weapon,
+        weaponName: WEAPONS[this.game.weapon]?.name ?? "unknown",
+        weaponKind: WEAPONS[this.game.weapon]?.kind ?? "unknown",
+        wallType: message.wallType || "none"
+      });
       document.getElementById("angle").value = String(player.angle);
       document.getElementById("power").value = String(player.power);
       await this.game.fire();
@@ -4092,6 +4306,18 @@ function toggleMobileAimMode() {
   game.render(forceMobileAimMode ? "Mobile aim test mode on." : "Mobile aim test mode off.");
 }
 
+function updateSimulationSpeedButton() {
+  const button = document.getElementById("simSpeed");
+  if (button) button.textContent = `Simulation speed: ${simulationSpeed}x`;
+}
+
+function cycleSimulationSpeed() {
+  const index = SIMULATION_SPEEDS.indexOf(simulationSpeed);
+  simulationSpeed = SIMULATION_SPEEDS[(index + 1) % SIMULATION_SPEEDS.length];
+  updateSimulationSpeedButton();
+  game.render(`Simulation speed ${simulationSpeed}x.`);
+}
+
 function updateUi(game, message = "") {
   syncGameModeUi();
   const activePlayer = game.players[game.active];
@@ -4264,6 +4490,105 @@ function debugDroneLines(currentGame) {
   return lines;
 }
 
+function debugSyncPhaseLine(currentGame) {
+  const net = globalThis.multiplayerSession;
+  if (!net?.started) return "Sync phase: local/offline";
+  if (currentGame.animating) return "Sync phase: live turn simulation in progress";
+  if (currentGame.roundOver) return "Sync phase: round over";
+  return "Sync phase: waiting at synchronized turn boundary";
+}
+
+function debugChecksumScopeLine(currentGame) {
+  const net = globalThis.multiplayerSession;
+  if (!net?.started) return "Checksum scope: live local state";
+  if (currentGame.animating) return "Checksum scope: live state is mid-turn; compare matching SHOT/COMPLETE log lines";
+  return "Checksum scope: live state is post-turn-advance; last accepted checksum is from COMPLETE before advance";
+}
+
+function debugRoundActionLines(currentGame) {
+  const actions = currentGame.roundActionLog || [];
+  const lines = [`Round action log: ${actions.length}`];
+  if (!actions.length) {
+    lines.push("  none");
+    return lines;
+  }
+  const shown = actions.slice(-120);
+  for (const action of shown) {
+    const prefix = `  ${String(action.index).padStart(3, "0")} turn=${action.activeTurnId ?? "n/a"} rng=${action.rngSeed} ground=${action.groundChecksum}`;
+    if (action.type === "shot") {
+      lines.push(
+        `${prefix} SHOT #${action.playerId} ${action.playerName} ` +
+        `weapon=${action.weaponName}(${action.weaponIndex}/${action.weaponKind}) ` +
+        `angle=${action.angle} power=${action.power}/${action.powerLimit} ` +
+        `ammoBefore=${action.ammoBefore} wind=${action.wind} wall=${action.wallType}`
+      );
+    } else if (action.type === "item") {
+      lines.push(
+        `${prefix} ITEM #${action.playerId} ${action.playerName} ` +
+        `item=${action.itemName}(${action.itemIndex}/${action.itemType}) ` +
+        `arg=${action.arg ?? "null"} ok=${action.ok} qty=${action.qtyBefore}->${action.qtyAfter} ` +
+        `angle=${action.angle} power=${action.power}/${action.powerLimit} pos=${action.position}`
+      );
+    } else if (action.type === "complete") {
+      lines.push(
+        `${prefix} COMPLETE turn=${action.turnId} player=${action.playerId} ` +
+        `checksum=${action.checksum} alive=${action.alive || "none"}`
+      );
+    } else if (action.type === "funky") {
+      lines.push(
+        `${prefix} FUNKY #${action.playerId} ${action.playerName} ` +
+        `origin=${action.x},${action.y} count=${action.count} particles=${action.particles}`
+      );
+    } else if (action.type === "funky-impacts") {
+      lines.push(
+        `${prefix} FUNKY-IMPACTS #${action.playerId} ${action.playerName} ` +
+        `count=${action.count} impacts=${action.impacts || "none"}`
+      );
+    } else if (action.type === "ai-plan") {
+      lines.push(
+        `${prefix} AI-PLAN #${action.playerId} ${action.playerName} ` +
+        `weapon=${action.weaponName}(${action.weaponIndex}/${action.weaponKind}) ` +
+        `angle=${action.angle} power=${action.power}/${action.powerLimit} ` +
+        `wind=${action.wind} plannedWall=${action.plannedWallType ?? "none"}`
+      );
+    } else if (action.type === "net-fire-send") {
+      lines.push(
+        `${prefix} FIRE-SEND #${action.playerId} ${action.playerName} ` +
+        `netTurn=${action.netTurnId ?? "n/a"} ` +
+        `weapon=${action.weaponName}(${action.weaponIndex}/${action.weaponKind}) ` +
+        `angle=${action.angle} power=${action.power}/${action.powerLimit} wall=${action.wallType}`
+      );
+    } else if (action.type === "net-fire-recv") {
+      lines.push(
+        `${prefix} FIRE-RECV #${action.playerId} ${action.playerName} ` +
+        `turn=${action.turnId ?? "n/a"} netTurn=${action.netTurnId ?? "n/a"} ` +
+        `weapon=${action.weaponName}(${action.weaponIndex}/${action.weaponKind}) ` +
+        `angle=${action.angle} power=${action.power}/${action.powerLimit} wall=${action.wallType}`
+      );
+    } else if (action.type === "ai-ready-fire") {
+      lines.push(
+        `${prefix} AI-READY #${action.playerId} ${action.playerName} ` +
+        `weapon=${action.weaponName}(${action.weaponIndex}/${action.weaponKind}) ` +
+        `angle=${action.angle} power=${action.power}/${action.powerLimit} pendingWall=${action.pendingWallType}`
+      );
+    } else if (action.type === "net-fire-blocked") {
+      lines.push(
+        `${prefix} FIRE-BLOCKED reason=${action.reason} ` +
+        `client=${action.clientId ?? "?"} host=${action.hostId ?? "?"} active=${action.active} ` +
+        `player=#${action.playerId} ${action.playerName} ai=${action.playerAi} activeTurn=${action.activeTurnId ?? "n/a"}`
+      );
+    } else if (action.type === "ai-error") {
+      lines.push(
+        `${prefix} AI-ERROR #${action.playerId} ${action.playerName} ` +
+        `weapon=${action.weaponName}(${action.weaponIndex}/${action.weaponKind}) reason=${action.reason}`
+      );
+    } else {
+      lines.push(`${prefix} ${String(action.type).toUpperCase()} ${JSON.stringify(action)}`);
+    }
+  }
+  return lines;
+}
+
 function updateDebugConsole(currentGame = game) {
   const output = document.getElementById("debugOutput");
   if (!output) return;
@@ -4277,7 +4602,10 @@ function updateDebugConsole(currentGame = game) {
     `Next RNG value: ${currentGame.rand.peek().toFixed(9)}`,
     `Ground checksum: ${currentGame.groundChecksum()}`,
     `Full checksum: ${currentGame.checksum()}`,
+    debugChecksumScopeLine(currentGame),
     `Resolution: ${WIDTH}x${HEIGHT}`,
+    `Simulation speed: ${simulationSpeed}x`,
+    debugSyncPhaseLine(currentGame),
     `Galsla mode: ${currentGame.galslaMode ? "on" : "off"}`,
     `Wind: ${currentGame.wind}`,
     `Round over: ${currentGame.roundOver}`,
@@ -4285,12 +4613,16 @@ function updateDebugConsole(currentGame = game) {
     `Active player: ${active ? `${active.name} #${active.id}` : "none"}`,
     `Active index: ${currentGame.active}`,
     `Net activeTurnId: ${globalThis.multiplayerSession?.activeTurnId ?? "n/a"}`,
+    `Pending shot wall: ${currentGame.pendingShotWallType || "none"}`,
+    `Forced shot wall: ${currentGame.forcedShotWallType || "none"}`,
     `Weapon: ${WEAPONS[currentGame.weapon]?.name ?? "unknown"} (#${currentGame.weapon})`,
     `Tracer trails: ${currentGame.tracerTrails.length}`,
     `Hover: ${currentGame.hoverPlayer ? currentGame.hoverPlayer.name : "none"}`,
     `Multiplayer: ${globalThis.multiplayerSession?.started ? `game=${globalThis.multiplayerSession.room} self=${globalThis.multiplayerSession.playerId} turn=${currentGame.active}` : "offline"}`,
-    `Last net checksum: ${globalThis.multiplayerSession?.lastChecksum || "n/a"}`,
+    `Last accepted COMPLETE checksum: ${globalThis.multiplayerSession?.lastChecksum || "n/a"}`,
     ...debugDroneLines(currentGame),
+    "",
+    ...debugRoundActionLines(currentGame),
     "",
     "Players:"
   ];
@@ -4314,7 +4646,10 @@ function updateDebugConsole(currentGame = game) {
 function toggleDebugConsole() {
   const box = document.getElementById("debugBox");
   const shouldOpen = box.classList.contains("hidden");
-  if (shouldOpen) updateDebugConsole();
+  if (shouldOpen) {
+    updateSimulationSpeedButton();
+    updateDebugConsole();
+  }
   box.classList.toggle("hidden", !shouldOpen);
 }
 
@@ -4391,8 +4726,23 @@ function inventoryAction(item, index, player, autoDefense = false) {
 async function applyItemUse(playerId, index, arg = null) {
   const player = game.players[playerId];
   const item = ITEMS[index];
-  if (!player || !item) return false;
-  if (player.items[index] <= 0 && item.type !== "parachute") return false;
+  const before = player ? {
+    qty: player.items[index],
+    x: player.x,
+    y: player.y,
+    power: player.power,
+    powerLimit: player.powerLimit,
+    angle: player.angle
+  } : {};
+  if (!player || !item) {
+    game.logItemUse(player, index, arg, false, before);
+    return false;
+  }
+  if (player.items[index] <= 0 && item.type !== "parachute") {
+    game.logItemUse(player, index, arg, false, before);
+    return false;
+  }
+  let ok = true;
   if (item.type === "battery") {
     player.items[index]--;
     player.powerLimit = Math.min(MAX_POWER, player.powerLimit + item.power);
@@ -4401,30 +4751,38 @@ async function applyItemUse(playerId, index, arg = null) {
     player.items[index]--;
     player.shield = { strength: item.strength, maxStrength: item.strength, damage: item.damage, thickness: item.thickness };
   } else if (item.type === "interceptor") {
-    if (player.interceptorDrone?.active) return false;
-    player.items[index]--;
-    game.createInterceptorDrone(player);
+    if (player.interceptorDrone?.active) ok = false;
+    else {
+      player.items[index]--;
+      game.createInterceptorDrone(player);
+    }
   } else if (item.type === "fuel") {
     const dir = Number(arg) < 0 ? -1 : 1;
-    if (player.items[index] <= 0) return false;
     const ty = player.y + player.height - 1;
     const tx = dir === 1 ? player.x + player.width : player.x - 1;
-    if (tx + dir < 0 || tx + dir >= WIDTH || !game.bitmap.isBackground(tx + dir, ty - 1)) return false;
-    player.items[index]--;
-    const baseX = dir === 1
-      ? tx - (player.sprite[0][6] ?? 0)
-      : tx + (player.sprite[0][5] ?? 0);
-    if (!game.bitmap.isBackground(baseX, ty)) player.y--;
-    player.x = Math.max(0, Math.min(WIDTH - player.width - 1, player.x + dir));
-    const fallCount = await game.settleOneTank(player, true, { usingFuel: true });
-    game.applyFallingDamage(player, fallCount);
+    if (player.items[index] <= 0 || tx + dir < 0 || tx + dir >= WIDTH || !game.bitmap.isBackground(tx + dir, ty - 1)) {
+      ok = false;
+    } else {
+      player.items[index]--;
+      const baseX = dir === 1
+        ? tx - (player.sprite[0][6] ?? 0)
+        : tx + (player.sprite[0][5] ?? 0);
+      if (!game.bitmap.isBackground(baseX, ty)) player.y--;
+      player.x = Math.max(0, Math.min(WIDTH - player.width - 1, player.x + dir));
+      const fallCount = await game.settleOneTank(player, true, { usingFuel: true });
+      game.applyFallingDamage(player, fallCount);
+    }
   } else if (item.type === "parachute") {
     player.parachutes = Math.max(0, Math.min(player.items[index], Number(arg) || 0));
   } else if (item.type === "tracer") {
     player.tracer = !player.tracer;
   } else if (item.type === "autodefense") {
     player.autoDefense = true;
+  } else {
+    ok = false;
   }
+  game.logItemUse(player, index, arg, ok, before);
+  if (!ok) return false;
   game.render();
   if (!document.getElementById("inventoryBox").classList.contains("hidden") && player === activePlayer() && !autoDefenseMode) showInventory();
   return true;
@@ -4433,21 +4791,35 @@ async function applyItemUse(playerId, index, arg = null) {
 function autoActivateDefaultItems(player) {
   if (player.autoDefensePrepared || !canUseAutoDefense(player)) return false;
   player.autoDefensePrepared = true;
+  const autoDefenseBefore = { qty: player.items[6] };
   player.items[6]--;
+  game.logItemUse(player, 6, "auto-defense", true, autoDefenseBefore);
   const interceptorIndex = ITEMS.findIndex((item) => item.type === "interceptor");
   if (interceptorIndex >= 0 && player.items[interceptorIndex] > 0 && !player.interceptorDrone?.active) {
+    const before = { qty: player.items[interceptorIndex] };
     player.items[interceptorIndex]--;
     game.createInterceptorDrone(player);
+    game.logItemUse(player, interceptorIndex, "auto-defense", true, before);
   }
   for (const index of [2, 1, 0]) {
     if (player.items[index] <= 0) continue;
     const item = ITEMS[index];
+    const before = { qty: player.items[index] };
     player.items[index]--;
     player.shield = { strength: item.strength, maxStrength: item.strength, damage: item.damage, thickness: item.thickness };
+    game.logItemUse(player, index, "auto-defense", true, before);
     break;
   }
-  if (player.items[3] > 0) player.parachutes = player.items[3];
-  if (player.items[5] > 0) player.tracer = true;
+  if (player.items[3] > 0) {
+    const before = { qty: player.items[3] };
+    player.parachutes = player.items[3];
+    game.logItemUse(player, 3, "auto-defense", true, before);
+  }
+  if (player.items[5] > 0) {
+    const before = { qty: player.items[5] };
+    player.tracer = true;
+    game.logItemUse(player, 5, "auto-defense", true, before);
+  }
   return true;
 }
 
@@ -4482,7 +4854,11 @@ function openNextAutoDefensePlayer(multiplayerPhase = false) {
     finishAutoDefensePhase(multiplayerPhase, true);
     return;
   }
-  if (autoDefensePlayer.items[6] > 0) autoDefensePlayer.items[6]--;
+  if (autoDefensePlayer.items[6] > 0) {
+    const before = { qty: autoDefensePlayer.items[6] };
+    autoDefensePlayer.items[6]--;
+    game.logItemUse(autoDefensePlayer, 6, "auto-defense-menu", true, before);
+  }
   autoDefensePlayer.autoDefensePrepared = true;
   showInventory(autoDefensePlayer, { autoDefense: true });
   game.render(`${autoDefensePlayer.name} can enable defensive items.`);
@@ -4991,6 +5367,9 @@ document.getElementById("closeSystem").addEventListener("click", () => {
 });
 document.getElementById("statistics").addEventListener("click", () => {
   showStatistics();
+});
+document.getElementById("simSpeed").addEventListener("click", () => {
+  cycleSimulationSpeed();
 });
 document.getElementById("closeStats").addEventListener("click", () => {
   document.getElementById("statsBox").classList.add("hidden");
