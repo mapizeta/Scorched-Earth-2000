@@ -1201,14 +1201,14 @@ class ScorchGame {
     setControlsDisabled(true);
     beep(170, 0.04);
     const weapon = WEAPONS[this.weapon];
-    const wallType = weapon.kind === "laser" ? "none" : this.shotWallType();
+    const wallType = weapon.kind === "laser"
+      ? (this.pendingShotWallType || this.forcedShotWallType ? this.shotWallType() : "none")
+      : this.shotWallType();
     this.logShotFired(player, this.weapon, weapon, wallType);
     player.lastWeapon = this.weapon;
     player.preferredWeapon = this.weapon;
     if (!weapon.infinite) player.weapons[this.weapon] = Math.max(0, player.weapons[this.weapon] - 1);
     if (weapon.kind === "laser") {
-      this.pendingShotWallType = null;
-      this.forcedShotWallType = null;
       await this.fireLaser(player, weapon);
       this.finishShot("Turn complete.", firedPlayerId);
       return;
@@ -3779,7 +3779,7 @@ class MultiplayerSession {
     const player = this.game.players[this.game.active];
     const weapon = WEAPONS[this.game.weapon];
     const wallType = weapon?.kind === "laser"
-      ? "none"
+      ? (this.game.pendingShotWallType || "none")
       : (this.game.pendingShotWallType || this.game.prepareShotWallType());
     this.game.logRoundAction("net-fire-send", {
       playerId: player.id,
