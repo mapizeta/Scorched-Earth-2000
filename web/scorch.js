@@ -35,7 +35,8 @@ const WEAPONS = [
   { name: "Hot Napalm", radius: 280, ammo: 0, price: 20000, bundle: 1, kind: "napalm", hot: true, volume: 420 },
   { name: "MIRV", radius: 25, ammo: 0, price: 35000, bundle: 1, kind: "mirv", particles: 5 },
   { name: "Death Head", radius: 55, ammo: 0, price: 90000, bundle: 1, kind: "mirv", particles: 9 },
-  { name: "Laser", ammo: 0, price: 25000, bundle: 1, kind: "laser", beamWidth: 5, damage: 880 }
+  { name: "Laser", ammo: 0, price: 25000, bundle: 1, kind: "laser", beamWidth: 5, damage: 880 },
+  { name: "Plasma Blast", radius: 72, ammo: 0, price: 30000, bundle: 1, kind: "plasma", duration: 96 }
 ];
 const ITEMS = [
   { name: "Shield", price: 20000, bundle: 1, max: 0, type: "shield", strength: 1, damage: 0.9, thickness: 1 },
@@ -1201,7 +1202,9 @@ class ScorchGame {
     setControlsDisabled(true);
     beep(170, 0.04);
     const weapon = WEAPONS[this.weapon];
-    const wallType = weapon.kind === "laser"
+    const wallType = weapon.kind === "plasma"
+      ? "none"
+      : weapon.kind === "laser"
       ? (this.pendingShotWallType || this.forcedShotWallType ? this.shotWallType() : "none")
       : this.shotWallType();
     this.logShotFired(player, this.weapon, weapon, wallType);
@@ -1210,6 +1213,11 @@ class ScorchGame {
     if (!weapon.infinite) player.weapons[this.weapon] = Math.max(0, player.weapons[this.weapon] - 1);
     if (weapon.kind === "laser") {
       await this.fireLaser(player, weapon);
+      this.finishShot("Turn complete.", firedPlayerId);
+      return;
+    }
+    if (weapon.kind === "plasma") {
+      await this.firePlasmaBlast(player, weapon);
       this.finishShot("Turn complete.", firedPlayerId);
       return;
     }
@@ -1648,6 +1656,174 @@ class ScorchGame {
     await this.settleTanks(player);
     for (const dead of deaths) await this.randomTankExplosion(dead);
     this.nextTurn("Laser complete.");
+  }
+  async firePlasmaBlast(player, weapon) {
+    beep(95, 0.18);
+    const { x, y } = this.tankCenter(player);
+    const radius = weapon.radius ?? 72;
+    const groundY = player.y + player.height + 1;
+    this.render(`${player.name} releases Plasma Blast.`);
+    const dockedDrone = await this.dockInterceptorForPlasma(player);
+    const destroyedDrones = this.destroyDronesNear(x, y, radius);
+    await this.animatePlasmaBlast(x, y, radius, weapon.duration ?? 96, destroyedDrones, { groundY });
+    const deaths = this.damagePlayers(x, y, radius, player, { immunePlayer: player, preserveDrones: true, damageScale: 2.4 });
+    for (const dead of deaths) await this.randomTankExplosion(dead);
+    await this.relaunchDockedInterceptor(player, dockedDrone);
+    this.nextTurn("Plasma Blast complete.");
+  }
+  async dockInterceptorForPlasma(player) {
+    const drone = player.interceptorDrone;
+    if (!drone?.active) return null;
+    const dock = this.tankCenter(player);
+    const saved = { x: drone.x, y: drone.y, age: drone.age ?? 0, phase: drone.phase ?? player.id * 1.7 };
+    for (let frame = 0; frame < 18; frame++) {
+      const t = (frame + 1) / 18;
+      const ease = 1 - (1 - t) * (1 - t);
+      drone.x = saved.x + (dock.x - saved.x) * ease;
+      drone.y = saved.y + (dock.y - saved.y) * ease;
+      this.drawWorld();
+      await sleep(18);
+    }
+    player.interceptorDrone = null;
+    this.drawWorld();
+    await sleep(60);
+    return { ...saved, dockX: dock.x, dockY: dock.y };
+  }
+  async relaunchDockedInterceptor(player, dockedDrone) {
+    if (!dockedDrone || !player.alive || player.interceptorDrone?.active) return;
+    const home = this.droneHome(player);
+    const target = this.closestClearDronePoint(home.x + this.wind * 1.8, home.y);
+    player.interceptorDrone = {
+      active: true,
+      x: dockedDrone.dockX,
+      y: dockedDrone.dockY,
+      age: dockedDrone.age,
+      phase: dockedDrone.phase
+    };
+    const drone = player.interceptorDrone;
+    for (let frame = 0; frame < 22; frame++) {
+      const t = (frame + 1) / 22;
+      const ease = 1 - (1 - t) * (1 - t);
+      drone.x = dockedDrone.dockX + (target.x - dockedDrone.dockX) * ease;
+      drone.y = dockedDrone.dockY + (target.y - dockedDrone.dockY) * ease;
+      this.drawWorld();
+      await sleep(18);
+    }
+    drone.x = target.x;
+    drone.y = target.y;
+  }
+  async animatePlasmaBlast(x, y, radius, duration, debris = [], options = {}) {
+    const blobs = [];
+    const count = Math.max(42, Math.floor(radius / 1.35));
+    const groundY = Number.isFinite(options.groundY) ? options.groundY : Infinity;
+    for (let i = 0; i < count; i++) {
+      const angle = this.visualRand.next() * Math.PI * 2;
+      const distance = Math.sqrt(this.visualRand.next()) * radius * 0.58;
+      blobs.push({
+        x: Math.cos(angle) * distance,
+        y: Math.sin(angle) * distance,
+        radius: radius * (0.2 + this.visualRand.next() * 0.28),
+        phase: this.visualRand.next() * Math.PI * 2,
+        drift: (this.visualRand.next() - 0.5) * 0.28
+      });
+    }
+    blobs.push(
+      { x: 0, y: 0, radius: radius * 0.68, phase: 0.4, drift: 0 },
+      { x: -radius * 0.18, y: radius * 0.04, radius: radius * 0.46, phase: 2.1, drift: 0.04 },
+      { x: radius * 0.18, y: -radius * 0.02, radius: radius * 0.42, phase: 4.2, drift: -0.04 }
+    );
+    for (let frame = 0; frame < duration; frame++) {
+      const age = frame / Math.max(1, duration - 1);
+      const envelope = Math.sin(Math.PI * Math.min(1, age * 1.12));
+      const outerRadius = radius * (0.62 + age * 0.28);
+      this.drawWorld();
+      this.ctx.save();
+      this.ctx.globalCompositeOperation = "source-over";
+      for (const blob of blobs) {
+        const wobble = Math.sin(frame * 0.18 + blob.phase);
+        const px = x + blob.x * (0.72 + age * 0.34) + Math.cos(blob.phase + frame * 0.08) * blob.drift * frame;
+        let py = y + blob.y * (0.72 + age * 0.34) + Math.sin(blob.phase + frame * 0.1) * blob.drift * frame;
+        const r = Math.max(3, blob.radius * (0.72 + envelope * 0.45 + wobble * 0.12));
+        if (py + r > groundY) py = groundY - r;
+        const hot = Math.max(0, 1 - age * 0.85 + wobble * 0.12);
+        const centerRed = Math.floor(255 - age * 35);
+        const edgeRed = Math.floor(115 * hot + 20);
+        const glow = this.ctx.createRadialGradient(px - r * 0.18, py - r * 0.18, Math.max(1, r * 0.08), px, py, r);
+        glow.addColorStop(0, `rgba(${centerRed}, ${Math.floor(92 * hot)}, ${Math.floor(92 * hot)}, ${0.78 * (1 - age * 0.28)})`);
+        glow.addColorStop(0.48, `rgba(${Math.floor(185 * hot + 35)}, ${Math.floor(24 * hot)}, ${Math.floor(24 * hot)}, ${0.64 * (1 - age * 0.22)})`);
+        glow.addColorStop(1, `rgba(${edgeRed}, 0, 0, 0)`);
+        this.ctx.fillStyle = glow;
+        this.ctx.beginPath();
+        this.ctx.arc(px, py, r, 0, Math.PI * 2);
+        this.ctx.fill();
+      }
+      const rimY = Math.min(y, groundY - outerRadius);
+      const rim = this.ctx.createRadialGradient(x, rimY, outerRadius * 0.58, x, rimY, outerRadius);
+      rim.addColorStop(0, "rgba(255, 170, 170, 0)");
+      rim.addColorStop(0.55, `rgba(210, 12, 12, ${0.24 * (1 - age)})`);
+      rim.addColorStop(1, `rgba(12, 0, 0, ${0.4 * (1 - age)})`);
+      this.ctx.fillStyle = rim;
+      this.ctx.beginPath();
+      this.ctx.arc(x, rimY, outerRadius, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.restore();
+      for (const drone of debris) this.drawDroneDebris(drone.x, drone.y, Math.floor(frame / 3));
+      await sleep(24);
+    }
+  }
+  async animateRedBlackBurst(x, y, radius, duration, debris = []) {
+    const grid = 4;
+    const size = radius * 2 + 1;
+    const cells = Math.ceil(size / grid);
+    const noise = new Uint8Array(cells * cells);
+    const cx = radius;
+    const cy = radius;
+    for (let frame = 0; frame < duration; frame++) {
+      const age = frame / Math.max(1, duration - 1);
+      const pulse = 0.78 + Math.sin(frame * 0.42) * 0.08;
+      this.drawWorld();
+      this.ctx.save();
+      for (let gy = 0; gy < cells; gy++) {
+        for (let gx = 0; gx < cells; gx++) {
+          const i = gy * cells + gx;
+          const px = gx * grid + grid / 2;
+          const py = gy * grid + grid / 2;
+          const dx = px - cx;
+          const dy = py - cy;
+          const dist = Math.hypot(dx, dy);
+          if (dist > radius) {
+            noise[i] = 0;
+            continue;
+          }
+          const edge = 1 - dist / radius;
+          const flare = this.visualRand.int(110);
+          noise[i] = Math.max(0, Math.min(255, Math.floor(noise[i] * 0.58 + edge * 190 * pulse + flare)));
+        }
+      }
+      const alpha = Math.max(0, Math.min(0.9, (1 - age) * 0.86));
+      for (let gy = 0; gy < cells; gy++) {
+        for (let gx = 0; gx < cells; gx++) {
+          const value = noise[gy * cells + gx];
+          if (value < 18) continue;
+          const px = x - radius + gx * grid;
+          const py = y - radius + gy * grid;
+          const red = Math.max(30, Math.min(255, value + this.visualRand.int(55)));
+          const dark = Math.max(0, Math.floor(value * 0.06 - 8));
+          this.ctx.globalAlpha = alpha * Math.min(1, value / 180);
+          this.ctx.fillStyle = `rgb(${red}, ${dark}, ${dark})`;
+          this.ctx.fillRect(px, py, grid + 1, grid + 1);
+        }
+      }
+      this.ctx.globalAlpha = Math.max(0.06, alpha * 0.35);
+      this.ctx.strokeStyle = "#250000";
+      this.ctx.lineWidth = 2;
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, radius * (0.82 + Math.sin(frame * 0.24) * 0.05), 0, Math.PI * 2);
+      this.ctx.stroke();
+      this.ctx.restore();
+      for (const drone of debris) this.drawDroneDebris(drone.x, drone.y, Math.floor(frame / 3));
+      await sleep(24);
+    }
   }
   drawLaserBeam(beam, width, frame) {
     this.ctx.save();
@@ -2323,13 +2499,15 @@ class ScorchGame {
     this.ctx.stroke();
   }
   async randomTankExplosion(player) {
-    switch (this.rand.int(7)) {
+    switch (this.rand.int(9)) {
       case 0: return this.fireTankExplosion(player);
       case 1: return this.roundTankExplosion(player, 10);
       case 2: return this.roundTankExplosion(player, 60);
       case 3: return this.roundTankExplosion(player, 100);
       case 4: return this.sandExplosion(this.tankCenter(player).x, this.tankCenter(player).y, { kind: "sand" }, null, false);
       case 5: return this.laserTankExplosion(player);
+      case 6: return this.plasmaTankExplosion(player);
+      case 7: return this.redBlackTankExplosion(player);
       default: return this.funkyExplosion(this.tankCenter(player).x, this.tankCenter(player).y, { kind: "funky", particles: 6 }, player, false);
     }
   }
@@ -2342,6 +2520,19 @@ class ScorchGame {
   }
   async tankExplosion(player) {
     return this.roundTankExplosion(player, 18);
+  }
+  async plasmaTankExplosion(player) {
+    const { x, y } = this.tankCenter(player);
+    const weapon = { kind: "plasma", radius: 62, duration: 72 };
+    await this.animatePlasmaBlast(x, y, weapon.radius, weapon.duration, [], { groundY: player.y + player.height + 1 });
+  }
+  async redBlackTankExplosion(player) {
+    const { x, y } = this.tankCenter(player);
+    const radius = 66;
+    await this.animateRedBlackBurst(x, y, radius, 82);
+    this.bitmap.setColor(null);
+    this.bitmap.fillCircle(x, y, radius);
+    this.drop(0, WIDTH);
   }
   async fireTankExplosion(player) {
     const x = player.x + Math.floor(player.width / 2);
@@ -2457,6 +2648,7 @@ class ScorchGame {
       }
       return;
     }
+    if (weapon.kind === "plasma") return;
     this.bitmap.fillCircle(x, y, radius);
   }
   drawSandExplosionToBitmap(x, y, size) {
@@ -2513,12 +2705,14 @@ class ScorchGame {
     this.bitmap.setPixel(x, y - 1);
     this.bitmap.setPixel(x, y + 1);
   }
-  damagePlayers(x, y, radius, shooter) {
-    this.destroyDronesNear(x, y, radius);
+  damagePlayers(x, y, radius, shooter, options = {}) {
+    if (!options.preserveDrones) this.destroyDronesNear(x, y, radius);
     const deaths = [];
+    const damageScale = Number.isFinite(options.damageScale) ? options.damageScale : 1;
     for (const player of this.players) {
       if (!player.alive) continue;
-      const damage = this.applyDamage(player, this.roundDamage(player, x, y, radius));
+      if (options.immunePlayer === player) continue;
+      const damage = this.applyDamage(player, Math.round(this.roundDamage(player, x, y, radius) * damageScale));
       if (player !== shooter) this.recordDamage(shooter, player, damage);
       if (player.powerLimit < MIN_POWER) {
         player.alive = false;
@@ -2582,11 +2776,12 @@ class ScorchGame {
     const splash = 1.02 * radius;
     return splash > distance ? Math.trunc(MAX_POWER - (MAX_POWER * distance) / splash) : 0;
   }
-  async settleTanks(shooter = null) {
+  async settleTanks(shooter = null, options = {}) {
     const deaths = [];
     for (const player of this.players) {
       if (!player.alive) continue;
       const fallCount = await this.settleOneTank(player, true);
+      if (options.immunePlayer === player) continue;
       if (this.applyFallingDamage(player, fallCount)) {
         deaths.push(player);
         this.recordKill(shooter, player);
@@ -2769,7 +2964,9 @@ class ScorchGame {
     }, 5000);
     let shot = null;
     try {
-      shot = weapon.kind === "laser"
+      shot = weapon.kind === "plasma"
+        ? { angle: player.angle, power: player.power }
+        : weapon.kind === "laser"
         ? await this.findAiLaserShot(player, weapon)
         : await this.findAiShot(player, weapon);
     } catch (error) {
@@ -2866,7 +3063,9 @@ class ScorchGame {
       const distance = (pricePosition - center) / spread;
       const fit = Math.exp(-0.5 * distance * distance);
       const ammoWeight = choice.weapon.infinite ? 1 : Math.min(2.2, 0.75 + Math.log2(Math.max(1, choice.qty) + 1) * 0.18);
-      const weight = Math.max(0.04, fit) * ammoWeight;
+      const plasmaScore = choice.weapon.kind === "plasma" ? this.scoreAiPlasmaBlast(player, choice.weapon) : null;
+      const plasmaWeight = plasmaScore == null ? 1 : (plasmaScore > 0 ? Math.min(4, 1 + plasmaScore / 320) : 0.01);
+      const weight = Math.max(0.04, fit) * ammoWeight * plasmaWeight;
       total += weight;
       return { ...choice, weight };
     });
@@ -2880,17 +3079,29 @@ class ScorchGame {
   randomAiWeapon(player) {
     const choices = WEAPONS
       .map((weapon, index) => ({ weapon, index, qty: player.weapons[index] ?? 0 }))
-      .filter(({ qty }) => qty > 0);
+      .filter(({ weapon, qty }) => qty > 0 && (weapon.kind !== "plasma" || this.scoreAiPlasmaBlast(player, weapon) > 0));
     if (!choices.length) return usableWeaponIndex(player, 0);
     const noise = this.aiChoiceNoise(player, choices);
     const index = Math.max(0, Math.min(choices.length - 1, Math.floor(noise * choices.length)));
     return choices[index]?.index ?? usableWeaponIndex(player, 0);
+  }
+  scoreAiPlasmaBlast(player, weapon) {
+    const { x, y } = this.tankCenter(player);
+    const radius = weapon.radius || 72;
+    let score = 0;
+    for (const target of this.players) {
+      if (!target.alive || target === player) continue;
+      const damage = this.roundDamage(target, x, y, radius);
+      score += damage * this.aiTargetPriority(player, target);
+    }
+    return score;
   }
   aiWeaponRadius(weapon) {
     if (weapon.kind === "mirv") return Math.round((weapon.radius || 10) * Math.min(3.2, 1 + (weapon.particles || 1) * 0.24));
     if (weapon.kind === "napalm") return Math.round((weapon.radius || 80) * 0.45);
     if (weapon.kind === "digger") return Math.max(18, Math.round((weapon.radius || 24) * 0.9));
     if (weapon.kind === "laser") return Math.max(24, Math.round((weapon.beamWidth || 5) * 8));
+    if (weapon.kind === "plasma") return weapon.radius || 72;
     return weapon.radius || 10;
   }
   async findAiLaserShot(player, weapon = WEAPONS[16]) {
@@ -3342,6 +3553,8 @@ function escapeHtml(value) {
 }
 
 const PLAYER_NAME_STORAGE_KEY = "scorch2000.multiplayerName";
+const SINGLE_PLAYER_SETTINGS_STORAGE_KEY = "scorch2000.singlePlayerSettings";
+const MULTIPLAYER_SETTINGS_STORAGE_KEY = "scorch2000.multiplayerSettings";
 
 function cleanPlayerName(value) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, 24);
@@ -3364,6 +3577,80 @@ const singlePlayerSettings = {
   currentRound: 1,
   gameOver: false
 };
+
+const SETUP_STORAGE_FIELDS = {
+  singlePlayer: {
+    key: SINGLE_PLAYER_SETTINGS_STORAGE_KEY,
+    fields: {
+      resolutionSelect: "value",
+      playerCount: "value",
+      aiCount: "value",
+      singlePlayerWind: "value",
+      singlePlayerWalls: "value",
+      singlePlayerChangingWinds: "checked",
+      singlePlayerUnlimitedInventory: "checked",
+      singlePlayerCash: "value",
+      singlePlayerRounds: "value",
+      tankSelect: "value"
+    }
+  },
+  multiplayer: {
+    key: MULTIPLAYER_SETTINGS_STORAGE_KEY,
+    fields: {
+      multiplayerTank: "value",
+      multiplayerPrivate: "checked",
+      multiplayerResolution: "value",
+      multiplayerWind: "value",
+      multiplayerWalls: "value",
+      multiplayerChangingWinds: "checked",
+      multiplayerUnlimitedInventory: "checked",
+      multiplayerCash: "value",
+      multiplayerRounds: "value"
+    }
+  }
+};
+
+function loadStoredJson(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function applyStoredSetupSettings(group) {
+  const config = SETUP_STORAGE_FIELDS[group];
+  if (!config) return;
+  const values = loadStoredJson(config.key);
+  for (const [id, property] of Object.entries(config.fields)) {
+    const element = document.getElementById(id);
+    if (!element || values[id] == null) continue;
+    if (property === "checked") element.checked = !!values[id];
+    else element.value = String(values[id]);
+  }
+}
+
+function saveSetupSettings(group) {
+  const config = SETUP_STORAGE_FIELDS[group];
+  if (!config) return;
+  const values = {};
+  for (const [id, property] of Object.entries(config.fields)) {
+    const element = document.getElementById(id);
+    if (!element) continue;
+    values[id] = property === "checked" ? !!element.checked : element.value;
+  }
+  localStorage.setItem(config.key, JSON.stringify(values));
+}
+
+function bindSetupSettingsPersistence(group) {
+  const config = SETUP_STORAGE_FIELDS[group];
+  if (!config) return;
+  for (const id of Object.keys(config.fields)) {
+    const element = document.getElementById(id);
+    if (!element) continue;
+    element.addEventListener("change", () => saveSetupSettings(group));
+  }
+}
 
 function suggestedGameName(playerName) {
   const name = cleanPlayerName(playerName) || "Player";
@@ -3598,6 +3885,7 @@ class MultiplayerSession {
   async create() {
     await this.ensureSocket();
     if (!this.saveName()) return;
+    saveSetupSettings("multiplayer");
     document.getElementById("createRoom").disabled = true;
     this.send({
       type: "create",
@@ -3778,7 +4066,9 @@ class MultiplayerSession {
     }
     const player = this.game.players[this.game.active];
     const weapon = WEAPONS[this.game.weapon];
-    const wallType = weapon?.kind === "laser"
+    const wallType = weapon?.kind === "plasma"
+      ? "none"
+      : weapon?.kind === "laser"
       ? (this.game.pendingShotWallType || "none")
       : (this.game.pendingShotWallType || this.game.prepareShotWallType());
     this.game.logRoundAction("net-fire-send", {
@@ -4208,7 +4498,9 @@ function initTankPickers() {
     for (const button of picker.querySelectorAll(".tank-pick")) {
       renderTankIcon(button.querySelector("canvas"), Number(button.dataset.tank));
       button.addEventListener("click", () => {
-        document.getElementById(targetId).value = button.dataset.tank;
+        const select = document.getElementById(targetId);
+        select.value = button.dataset.tank;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
         syncTankPicker(targetId);
       });
     }
@@ -5065,7 +5357,8 @@ function aiPurchasePower(row) {
     const radius = row.kind === "weapon" ? (row.radius || 0) : 0;
     const particles = row.particles || 1;
     const laser = row.weaponKind === "laser" ? (row.damage || 880) * 0.1 + (row.beamWidth || 5) * 20 : 0;
-    return radius * Math.min(3.5, 1 + particles * 0.22) + laser + row.price / 1200;
+    const plasma = row.weaponKind === "plasma" ? radius * 0.55 : 0;
+    return radius * Math.min(3.5, 1 + particles * 0.22) + laser + plasma + row.price / 1200;
   }
   if (row.type === "shield") return 80 + (row.strength || 0) * 55 + row.price / 1500;
   if (row.type === "interceptor") return 170;
@@ -5155,6 +5448,11 @@ weaponSelect.addEventListener("change", (event) => {
   game.render();
 });
 initTankPickers();
+applyStoredSetupSettings("singlePlayer");
+applyStoredSetupSettings("multiplayer");
+bindSetupSettingsPersistence("singlePlayer");
+bindSetupSettingsPersistence("multiplayer");
+syncTankPickers();
 document.getElementById("multiplayerBox").classList.remove("hidden");
 const savedMultiplayerName = multiplayer.loadSavedName();
 if (multiplayer.pendingJoinCode) document.getElementById("multiplayerRoom").value = multiplayer.pendingJoinCode;
@@ -5207,6 +5505,7 @@ document.getElementById("aiCount").addEventListener("change", () => {
   document.getElementById("aiCount").value = String(aiCount);
 });
 document.getElementById("startRound").addEventListener("click", () => {
+  saveSetupSettings("singlePlayer");
   const [width, height] = document.getElementById("resolutionSelect").value.split("x").map(Number);
   const count = Number(document.getElementById("playerCount").value);
   const aiCount = Math.min(Number(document.getElementById("aiCount").value), count - 1);

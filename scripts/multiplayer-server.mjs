@@ -388,7 +388,7 @@ function roomPlayers(room) {
 }
 
 function defaultWeapons(unlimitedInventory = false) {
-  return unlimitedInventory ? Array(17).fill(999) : [999, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return unlimitedInventory ? Array(18).fill(999) : [999, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 }
 
 function defaultItems(unlimitedInventory = false) {
