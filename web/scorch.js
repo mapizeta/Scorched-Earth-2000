@@ -3658,6 +3658,23 @@ function suggestedGameName(playerName) {
 }
 
 const game = new ScorchGame(document.getElementById("field"));
+const controllerModeEnabled = new URLSearchParams(location.search).get("controller") === "1" || new URLSearchParams(location.search).get("mode") === "controller";
+const controllerRoomParam = new URLSearchParams(location.search).get("room")?.trim().toUpperCase() || "";
+
+function setControllerShellVisible(visible) {
+  document.getElementById("gameShell")?.classList.toggle("hidden", visible);
+  document.getElementById("controllerBox")?.classList.toggle("hidden", !visible);
+  document.getElementById("multiplayerBox")?.classList.add("hidden");
+  document.getElementById("createGameBox")?.classList.add("hidden");
+  document.getElementById("systemMenu")?.classList.add("hidden");
+}
+
+function populateControllerWeaponSelect() {
+  const select = document.getElementById("controllerWeapon");
+  if (!select) return;
+  select.innerHTML = WEAPONS.map((weapon, index) => `<option value="${index}">${weapon.name}</option>`).join("");
+  select.value = "0";
+}
 
 function startNextSinglePlayerRound() {
   if (singlePlayerSettings.initialCash > 0 && !singlePlayerSettings.unlimitedInventory) buyAiInventories(false);
@@ -3699,9 +3716,14 @@ class MultiplayerSession {
     this.countdownTimer = null;
     this.screen = "name";
     this.pendingJoinCode = new URLSearchParams(location.search).get("join")?.trim().toUpperCase().slice(0, 6) || "";
+    this.controllerMode = controllerModeEnabled;
+    this.controllerWeapon = 0;
+    this.controllerAngle = 30;
+    this.controllerPower = START_POWER;
   }
   status(text) {
     document.getElementById("multiplayerStatus").textContent = text;
+    this.updateControllerUi();
     updateDebugConsole();
   }
   showScreen(name) {
@@ -3747,6 +3769,7 @@ class MultiplayerSession {
   }
   roster() {
     syncGameModeUi();
+    this.updateControllerUi();
     const box = document.getElementById("multiplayerRoster");
     box.innerHTML = this.players.map((player) =>
       `<div>${player.id === this.playerId ? ">" : ""} ${escapeHtml(player.name)}${player.clientId === this.hostId ? " [host]" : ""}${player.ai ? " [AI]" : ""}</div>`
@@ -3818,6 +3841,100 @@ class MultiplayerSession {
     if ((this.room && !this.started && !this.private && this.autoStartAt) || this.screen === "lobby") {
       this.countdownTimer = setTimeout(() => this.updateCountdown(), 1000);
     }
+  }
+  controllerName() {
+    return cleanPlayerName(document.getElementById("controllerName")?.value || "");
+  }
+  saveControllerName() {
+    const name = this.controllerName();
+    if (!name) return "";
+    localStorage.setItem(PLAYER_NAME_STORAGE_KEY, name);
+    document.getElementById("controllerName").value = name;
+    document.getElementById("multiplayerName").value = name;
+    return name;
+  }
+  updateControllerUi() {
+    if (!this.controllerMode) return;
+    const statusEl = document.getElementById("controllerStatus");
+    const turnEl = document.getElementById("controllerTurn");
+    const playersEl = document.getElementById("controllerPlayers");
+    const buttons = [
+      document.getElementById("controllerAngleDown"),
+      document.getElementById("controllerAngleUp"),
+      document.getElementById("controllerPowerDown"),
+      document.getElementById("controllerPowerUp"),
+      document.getElementById("controllerFire")
+    ];
+    const activePlayer = this.started ? this.game.players[this.game.active] : null;
+    const isMyTurn = !!this.started && this.isLocalTurn();
+    const roomText = this.room ? `Room ${this.room}` : "Waiting for room";
+    const turnText = this.started && activePlayer
+      ? `${activePlayer.name}${isMyTurn ? " — your turn" : " — waiting"}`
+      : (this.room ? "Room ready" : "Join a room to start");
+    if (statusEl) statusEl.textContent = this.started ? `${roomText} · ${isMyTurn ? "Your turn" : "Watching"}` : roomText;
+    if (turnEl) turnEl.textContent = turnText;
+    for (const button of buttons) if (button) button.disabled = !this.started || !isMyTurn;
+    if (playersEl) {
+      const list = Array.isArray(this.players) ? this.players : [];
+      playersEl.innerHTML = list.map((player) => `
+        <div>${escapeHtml(player.name)}${player.clientId === this.hostId ? " [host]" : ""}${player.ai ? " [AI]" : ""}${this.started && player.id === this.game.active ? " • active" : ""}</div>
+      `).join("") || "<div>No players yet.</div>";
+    }
+  }
+  controllerJoin() {
+    const name = this.saveControllerName();
+    const room = document.getElementById("controllerRoom")?.value?.trim().toUpperCase() || "";
+    if (!name || !room) {
+      this.status("Enter your name and room code.");
+      return;
+    }
+    this.ensureSocket().then(() => {
+      this.sendJoinPayload({
+        type: "join",
+        room,
+        name,
+        tankType: Number(document.getElementById("multiplayerTank")?.value || 0)
+      });
+    }).catch((error) => this.status(error.message));
+  }
+  controllerLeave() {
+    this.send({ type: "leave" });
+    this.room = "";
+    this.players = [];
+    this.started = false;
+    this.autoStartAt = null;
+    this.chatLog = [];
+    this.controllerAngle = 30;
+    this.controllerPower = START_POWER;
+    document.getElementById("controllerRoom").value = "";
+    this.updateControllerUi();
+  }
+  controllerAdjustAngle(delta) {
+    if (!this.started || !this.isLocalTurn()) return;
+    this.controllerAngle = Math.max(0, Math.min(180, this.controllerAngle + delta));
+    this.send({ type: "aim", playerId: this.game.active, activeTurnId: this.activeTurnId, angle: this.controllerAngle, power: this.controllerPower });
+    this.updateControllerUi();
+  }
+  controllerAdjustPower(delta) {
+    if (!this.started || !this.isLocalTurn()) return;
+    this.controllerPower = Math.max(0, Math.min(this.game.players[this.game.active]?.powerLimit || START_POWER, this.controllerPower + delta));
+    this.send({ type: "aim", playerId: this.game.active, activeTurnId: this.activeTurnId, angle: this.controllerAngle, power: this.controllerPower });
+    this.updateControllerUi();
+  }
+  controllerFire() {
+    if (!this.started || !this.isLocalTurn()) return;
+    const player = this.game.players[this.game.active];
+    if (!player) return;
+    this.send({
+      type: "fire",
+      playerId: this.game.active,
+      activeTurnId: this.activeTurnId,
+      angle: this.controllerAngle,
+      power: this.controllerPower,
+      weapon: Number(document.getElementById("controllerWeapon")?.value || 0),
+      wallType: this.game.prepareShotWallType?.() || "none"
+    });
+    this.updateControllerUi();
   }
   ensureSocket() {
     if (this.socket?.readyState === WebSocket.OPEN) {
@@ -5453,14 +5570,24 @@ applyStoredSetupSettings("multiplayer");
 bindSetupSettingsPersistence("singlePlayer");
 bindSetupSettingsPersistence("multiplayer");
 syncTankPickers();
-document.getElementById("multiplayerBox").classList.remove("hidden");
-const savedMultiplayerName = multiplayer.loadSavedName();
-if (multiplayer.pendingJoinCode) document.getElementById("multiplayerRoom").value = multiplayer.pendingJoinCode;
-multiplayer.roster();
-if (savedMultiplayerName && multiplayer.pendingJoinCode) {
-  multiplayer.enterLobby().catch((error) => multiplayer.status(error.message));
-} else {
-  multiplayer.showScreen("name");
+populateControllerWeaponSelect();
+    document.getElementById("controllerName").value = multiplayer.loadSavedName() || "";
+    if (controllerRoomParam) document.getElementById("controllerRoom").value = controllerRoomParam;
+    if (controllerModeEnabled) {
+      setControllerShellVisible(true);
+      multiplayer.controllerMode = true;
+      multiplayer.updateControllerUi();
+      multiplayer.ensureSocket().catch((error) => multiplayer.status(error.message));
+    } else {
+      document.getElementById("multiplayerBox").classList.remove("hidden");
+      const savedMultiplayerName = multiplayer.loadSavedName();
+      if (multiplayer.pendingJoinCode) document.getElementById("multiplayerRoom").value = multiplayer.pendingJoinCode;
+      multiplayer.roster();
+      if (savedMultiplayerName && multiplayer.pendingJoinCode) {
+        multiplayer.enterLobby().catch((error) => multiplayer.status(error.message));
+      } else {
+        multiplayer.showScreen("name");
+      }
 }
 
 function nudgeAngle(amount) {
@@ -5583,6 +5710,21 @@ document.getElementById("singlePlayerModeWaiting").addEventListener("click", () 
 });
 document.getElementById("continueMultiplayer").addEventListener("click", () => {
   multiplayer.enterLobby().catch((error) => multiplayer.status(error.message));
+});
+document.getElementById("controllerJoin").addEventListener("click", () => multiplayer.controllerJoin());
+document.getElementById("controllerBack").addEventListener("click", () => {
+  if (multiplayer.room) multiplayer.controllerLeave();
+  setControllerShellVisible(false);
+  document.getElementById("multiplayerBox").classList.remove("hidden");
+  multiplayer.showScreen("name");
+});
+document.getElementById("controllerAngleDown").addEventListener("click", () => multiplayer.controllerAdjustAngle(-1));
+document.getElementById("controllerAngleUp").addEventListener("click", () => multiplayer.controllerAdjustAngle(1));
+document.getElementById("controllerPowerDown").addEventListener("click", () => multiplayer.controllerAdjustPower(-10));
+document.getElementById("controllerPowerUp").addEventListener("click", () => multiplayer.controllerAdjustPower(10));
+document.getElementById("controllerFire").addEventListener("click", () => multiplayer.controllerFire());
+document.getElementById("controllerWeapon").addEventListener("change", (event) => {
+  multiplayer.controllerWeapon = Number(event.target.value || 0);
 });
 document.getElementById("multiplayerName").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;

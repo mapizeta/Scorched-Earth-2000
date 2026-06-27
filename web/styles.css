@@ -401,6 +401,68 @@ select {
   border-color: #fff #777 #777 #fff;
 }
 
+.controller-window {
+  width: min(92vw, 360px);
+  box-sizing: border-box;
+  padding: 7px;
+  color: #000;
+  font-family: Dialog, Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  background: #c0c0c0;
+  border: 3px solid;
+  border-color: #fff #777 #777 #fff;
+}
+
+.controller-panel {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 6px;
+  padding: 8px 8px 10px;
+}
+
+.controller-panel input,
+.controller-panel select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 24px;
+  padding: 2px 4px;
+}
+
+.controller-actions,
+.controller-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.controller-controls button:last-child {
+  grid-column: 1 / -1;
+}
+
+.controller-status,
+.controller-turn {
+  padding: 4px 6px;
+  background: #999;
+  border: 3px solid;
+  border-color: #777 #fff #fff #777;
+}
+
+.controller-player-list {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.controller-player-list div {
+  padding: 4px 6px;
+  background: #b8b8b8;
+  border: 2px solid;
+  border-color: #fff #777 #777 #fff;
+}
+
 .waiting-window {
   width: 300px;
   box-sizing: border-box;

@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <main class="applet-shell">
+  <main class="applet-shell" id="gameShell">
     <section class="applet" id="applet">
       <div class="topbar">
         <span id="clientVersionLabel"></span>
@@ -70,6 +70,34 @@
       <div class="wall-readout" id="wallOut">Walls: None</div>
     </aside>
   </main>
+
+  <div class="floating-window hidden" id="controllerBox">
+    <div class="controller-window s-window">
+      <div class="window-title">Remote Controller</div>
+      <div class="controller-panel">
+        <label for="controllerName">Your name</label>
+        <input id="controllerName" maxlength="24" autocomplete="nickname" value="">
+        <label for="controllerRoom">Room code</label>
+        <input id="controllerRoom" maxlength="6" autocomplete="off" value="">
+        <div class="controller-actions">
+          <button id="controllerJoin" type="button">Join Room</button>
+          <button id="controllerBack" type="button">Back</button>
+        </div>
+        <div class="controller-status" id="controllerStatus">Connect to a room to start playing.</div>
+        <div class="controller-turn" id="controllerTurn">Waiting for a room.</div>
+        <div class="controller-controls">
+          <button id="controllerAngleDown" type="button">Angle -</button>
+          <button id="controllerAngleUp" type="button">Angle +</button>
+          <button id="controllerPowerDown" type="button">Power -</button>
+          <button id="controllerPowerUp" type="button">Power +</button>
+          <button id="controllerFire" type="button">Fire</button>
+        </div>
+        <label for="controllerWeapon">Weapon</label>
+        <select id="controllerWeapon"></select>
+        <div class="controller-player-list" id="controllerPlayers"></div>
+      </div>
+    </div>
+  </div>
 
   <div class="floating-window hidden" id="systemMenu">
     <div class="system-window s-window">
