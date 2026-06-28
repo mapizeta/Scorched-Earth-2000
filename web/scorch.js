@@ -4089,6 +4089,8 @@ class MultiplayerSession {
     if (!Array.isArray(players)) return;
     if (this.started && players.length !== this.game.players.length) this.applyActiveRoster(players);
     this.players = players;
+    const rosterPlayer = this.players.find((entry) => entry.clientId === this.clientId);
+    if (Number.isInteger(rosterPlayer?.id) && rosterPlayer.id >= 0) this.playerId = rosterPlayer.id;
     if (!this.started) {
       this.game.players = players.map((entry, index) => {
         const player = this.game.players[index] ?? new Player(index, entry.name, entry.tankType ?? (index % tankData.length), !!entry.ai, entry.aiType ?? 0);
@@ -4127,7 +4129,16 @@ class MultiplayerSession {
       this.playerId = message.selfPlayerId;
       return;
     }
-    this.playerId = message.players?.find((player) => player.clientId === this.clientId)?.id ?? this.playerId;
+    const rosterPlayer = Array.isArray(message.players)
+      ? message.players.find((player) => player.clientId === this.clientId)
+      : null;
+    if (Number.isInteger(rosterPlayer?.id) && rosterPlayer.id >= 0) {
+      this.playerId = rosterPlayer.id;
+      return;
+    }
+    this.playerId = Array.isArray(message.players)
+      ? message.players.find((player) => player.clientId === this.clientId)?.id ?? this.playerId
+      : this.playerId;
   }
   applySettings(message) {
     this.title = message.title || "";
@@ -4156,11 +4167,19 @@ class MultiplayerSession {
   name() {
     return cleanPlayerName(document.getElementById("multiplayerName").value);
   }
+  localPlayerId() {
+    if (Number.isInteger(this.playerId) && this.playerId >= 0 && this.game.players[this.playerId]) return this.playerId;
+    const rosterPlayer = this.players.find((entry) => entry.clientId === this.clientId);
+    if (Number.isInteger(rosterPlayer?.id) && rosterPlayer.id >= 0 && this.game.players[rosterPlayer.id]) return rosterPlayer.id;
+    return null;
+  }
   isLocalTurn() {
     if (!this.started) return false;
+    const localPlayerId = this.localPlayerId();
     const active = this.game.players[this.game.active];
-    if (active?.ai) return this.clientId === this.hostId;
-    return this.game.active === this.playerId;
+    if (!active) return false;
+    if (active.ai) return this.clientId === this.hostId;
+    return Number.isInteger(localPlayerId) && this.game.active === localPlayerId;
   }
   aim(player) {
     if (!this.isLocalTurn()) return;
